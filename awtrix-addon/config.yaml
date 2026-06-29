@@ -1,5 +1,5 @@
 name: AWTRIX Add-on
-version: "0.1.1"
+version: "0.1.2"
 slug: awtrix_addon
 description: Controlled AWTRIX event overlays for Home Assistant
 url: https://github.com/alex-ander-is/awtrix-addon
@@ -22,12 +22,14 @@ options:
   app_name: awtrix_addon
   clock_prefixes:
     - awtrix
+  default_clock_prefixes: []
   assets_dir: /share/awtrix-addon/assets
+  auth_token: ""
 schema:
   app_name: str
   clock_prefixes:
     - str
-  default_clock_prefixes?:
+  default_clock_prefixes:
     - str
   assets_dir: str
-  auth_token?: str
+  auth_token: str

@@ -58,7 +58,7 @@ def settings_from_options(raw: dict[str, Any]) -> Settings:
 
     clock_prefixes = _validate_prefix_list(raw.get("clock_prefixes"), required=True)
     default_raw = raw.get("default_clock_prefixes")
-    if default_raw is None:
+    if default_raw is None or default_raw == []:
         default_clock_prefixes = clock_prefixes
     else:
         default_clock_prefixes = _validate_prefix_list(default_raw, required=False)
@@ -75,8 +75,10 @@ def settings_from_options(raw: dict[str, Any]) -> Settings:
         raise StartupConfigError("invalid_assets_dir", "assets_dir must be a path string")
 
     auth_token = raw.get("auth_token")
-    if auth_token is not None and (not isinstance(auth_token, str) or not auth_token):
-        raise StartupConfigError("invalid_auth_token", "auth_token must be a non-empty string")
+    if auth_token == "":
+        auth_token = None
+    if auth_token is not None and not isinstance(auth_token, str):
+        raise StartupConfigError("invalid_auth_token", "auth_token must be a string")
 
     return Settings(
         app_name=app_name,

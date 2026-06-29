@@ -138,6 +138,17 @@ class ConfigAuthTests(unittest.TestCase):
                 }
             )
             self.assertEqual(settings.default_clock_prefixes, ("clock/a", "clock/b"))
+            self.assertIsNone(
+                settings_from_options(
+                    {
+                        "app_name": "awtrix_addon",
+                        "clock_prefixes": ["clock/a", "clock/b"],
+                        "default_clock_prefixes": [],
+                        "assets_dir": directory,
+                        "auth_token": "",
+                    }
+                ).auth_token
+            )
 
             with self.assertRaises(StartupConfigError):
                 settings_from_options({**base_options(Path(directory)), "extra": True})
@@ -681,9 +692,16 @@ class MetadataTests(unittest.TestCase):
         self.assertFalse(config["ingress"])
         self.assertEqual(config["ports"]["8099/tcp"], 8099)
         self.assertEqual(config["arch"], ["aarch64", "amd64"])
-        self.assertEqual(set(config["options"]), {"app_name", "clock_prefixes", "assets_dir"})
-        self.assertIn("auth_token?", config["schema"])
-        self.assertIn("default_clock_prefixes?", config["schema"])
+        self.assertEqual(
+            set(config["options"]),
+            {"app_name", "clock_prefixes", "default_clock_prefixes", "assets_dir", "auth_token"},
+        )
+        self.assertEqual(config["options"]["auth_token"], "")
+        self.assertEqual(config["options"]["default_clock_prefixes"], [])
+        self.assertIn("auth_token", config["schema"])
+        self.assertIn("default_clock_prefixes", config["schema"])
+        self.assertNotIn("auth_token?", config["schema"])
+        self.assertNotIn("default_clock_prefixes?", config["schema"])
 
 
 if __name__ == "__main__":

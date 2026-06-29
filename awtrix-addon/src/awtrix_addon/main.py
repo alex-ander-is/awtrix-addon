@@ -52,7 +52,7 @@ def _raw_option_token(options_file: Path) -> str | None:
     if not isinstance(raw, dict):
         return None
     token = raw.get("auth_token")
-    return token if isinstance(token, str) else None
+    return token if isinstance(token, str) and token else None
 
 
 def main() -> None:
