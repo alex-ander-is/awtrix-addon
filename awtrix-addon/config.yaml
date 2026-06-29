@@ -1,0 +1,33 @@
+name: AWTRIX Add-on
+version: "0.1.1"
+slug: awtrix_addon
+description: Controlled AWTRIX event overlays for Home Assistant
+url: https://github.com/alex-ander-is/awtrix-addon
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+init: false
+ingress: false
+services:
+  - mqtt:want
+map:
+  - share:rw
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Public health and authenticated JSON API
+options:
+  app_name: awtrix_addon
+  clock_prefixes:
+    - awtrix
+  assets_dir: /share/awtrix-addon/assets
+schema:
+  app_name: str
+  clock_prefixes:
+    - str
+  default_clock_prefixes?:
+    - str
+  assets_dir: str
+  auth_token?: str

@@ -1,0 +1,13 @@
+.codex-audit
+.git
+.pytest_cache
+__pycache__
+*.py[cod]
+.coverage
+htmlcov
+dist
+build
+*.egg-info
+.mypy_cache
+.ruff_cache
+.DS_Store

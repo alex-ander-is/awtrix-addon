@@ -1,0 +1,45 @@
+# Audit-loop local state
+.codex-audit/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Test / coverage output
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Build / package output
+build/
+dist/
+*.egg-info/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Local runtime / secrets
+.env
+.env.*
+!.env.example
+data/
+auth.json
+options.json
+*.log
+
+# Local Docker/context artifacts
+*.tar
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
