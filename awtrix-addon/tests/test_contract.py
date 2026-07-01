@@ -601,6 +601,7 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(repository["maintainer"], "alex-ander-is")
         self.assertTrue(ROOT.joinpath("config.yaml").is_file())
         self.assertTrue(ROOT.joinpath("Dockerfile").is_file())
+        self.assertTrue(ROOT.joinpath("CHANGELOG.md").is_file())
         self.assertTrue(ROOT.joinpath("icon.png").is_file())
         self.assertFalse(REPO_ROOT.joinpath("config.yaml").exists())
         self.assertFalse(REPO_ROOT.joinpath("Dockerfile").exists())
