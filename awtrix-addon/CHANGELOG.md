@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.5
+
+- Add App Info README usage instructions with setup, token, REST command, and simple automation examples.
+
 ## 0.1.4
 
 - Shorten generated-token startup logs to only the `secrets.yaml` authorization line and `/data/auth.json` location.
