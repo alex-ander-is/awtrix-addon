@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.3
+
+- Print the generated bearer token and ready-to-copy Home Assistant YAML snippets in the add-on startup log.
+
 ## 0.1.2
 
 - Allow the Home Assistant UI to save blank `auth_token` and `default_clock_prefixes` options while keeping generated tokens and default clock selection.
