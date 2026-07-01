@@ -42,41 +42,25 @@ def run(options_file: Path, data_dir: Path) -> None:
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-    for record in startup_log_records(settings, auth):
-        print(json.dumps(record, ensure_ascii=True))
+    for line in startup_log_lines(settings, auth):
+        print(line)
     web.run_app(app, host="0.0.0.0", port=8099)
 
 
-def startup_log_records(settings: Settings, auth: AuthManager) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = [
-        {"status": "started", "port": 8099, "auth": "option" if settings.auth_token else "generated"}
-    ]
+def startup_log_lines(settings: Settings, auth: AuthManager) -> list[str]:
+    lines = [json.dumps({"status": "started", "port": 8099, "auth": "option" if settings.auth_token else "generated"})]
     if settings.auth_token:
-        return records
+        return lines
 
     token = auth.active_token()
-    records.append(
-        {
-            "status": "generated_auth_token",
-            "token": token,
-            "auth_json": "/data/auth.json",
-            "secrets_yaml": (
-                "awtrix_addon_events_url: http://homeassistant.local:8099/api/events\n"
-                "awtrix_addon_current_event_url: http://homeassistant.local:8099/api/events/current\n"
-                f"awtrix_addon_authorization: Bearer {token}"
-            ),
-            "rest_command_yaml": (
-                "rest_command:\n"
-                "  awtrix_event:\n"
-                "    url: !secret awtrix_addon_events_url\n"
-                "    method: POST\n"
-                "    headers:\n"
-                "      Authorization: !secret awtrix_addon_authorization\n"
-                "      Content-Type: application/json"
-            ),
-        }
+    lines.extend(
+        [
+            "AWTRIX add-on generated auth token.",
+            f"Use in HA secrets.yaml: awtrix_addon_authorization: Bearer {token}",
+            "Token is stored in /data/auth.json",
+        ]
     )
-    return records
+    return lines
 
 
 def _raw_option_token(options_file: Path) -> str | None:

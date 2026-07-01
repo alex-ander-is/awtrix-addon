@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.4
+
+- Shorten generated-token startup logs to only the `secrets.yaml` authorization line and `/data/auth.json` location.
+
 ## 0.1.3
 
 - Print the generated bearer token and ready-to-copy Home Assistant YAML snippets in the add-on startup log.

@@ -388,7 +388,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body["details"]["config_error"]["code"], "invalid_app_name")
             self.assertFalse((data_dir / "auth.json").exists())
 
-    def test_generated_auth_startup_log_includes_ha_copy_blocks(self):
+    def test_generated_auth_startup_log_is_short_and_copyable(self):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             settings = settings_from_options(
@@ -399,15 +399,15 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                     "auth_token": "",
                 }
             )
-            records = main_module.startup_log_records(settings, AuthManager(data_dir))
+            lines = main_module.startup_log_lines(settings, AuthManager(data_dir))
 
-            self.assertEqual(records[0], {"status": "started", "port": 8099, "auth": "generated"})
-            self.assertEqual(records[1]["status"], "generated_auth_token")
-            token = records[1]["token"]
+            self.assertEqual(json.loads(lines[0]), {"status": "started", "port": 8099, "auth": "generated"})
+            self.assertEqual(lines[1], "AWTRIX add-on generated auth token.")
+            token = json.loads((data_dir / "auth.json").read_text(encoding="utf-8"))["token"]
             self.assertIsInstance(token, str)
-            self.assertIn("awtrix_addon_authorization: Bearer " + token, records[1]["secrets_yaml"])
-            self.assertIn("rest_command:", records[1]["rest_command_yaml"])
-            self.assertEqual(json.loads((data_dir / "auth.json").read_text(encoding="utf-8"))["token"], token)
+            self.assertEqual(lines[2], "Use in HA secrets.yaml: awtrix_addon_authorization: Bearer " + token)
+            self.assertEqual(lines[3], "Token is stored in /data/auth.json")
+            self.assertNotIn("rest_command", "\n".join(lines))
 
     def test_option_auth_startup_log_does_not_echo_token(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -419,9 +419,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                     "auth_token": "configured-token",
                 }
             )
-            records = main_module.startup_log_records(settings, AuthManager(Path(directory), settings.auth_token))
+            lines = main_module.startup_log_lines(settings, AuthManager(Path(directory), settings.auth_token))
 
-            self.assertEqual(records, [{"status": "started", "port": 8099, "auth": "option"}])
+            self.assertEqual(lines, ['{"status": "started", "port": 8099, "auth": "option"}'])
 
     async def test_api_cancel_allows_reusing_stable_event_id(self):
         first = await dispatch(
