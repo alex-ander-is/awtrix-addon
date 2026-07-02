@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from io import BytesIO
 import json
 import re
 import sys
@@ -23,7 +25,7 @@ from awtrix_addon.auth import AuthManager, TokenManagedByOptions
 from awtrix_addon.errors import api_error_middleware
 from awtrix_addon.lifecycle import DuplicateEventId, EventSpec, EventStore
 from awtrix_addon.mqtt import MemoryPublisher
-from awtrix_addon.renderer import AssetAnimation, blank_asset, load_asset, render_frame
+from awtrix_addon.renderer import AssetAnimation, blank_asset, load_asset, load_asset_bytes, render_frame
 from awtrix_addon.settings import StartupConfigError, settings_from_options
 
 
@@ -251,6 +253,71 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancel.status, 200)
         self.assertEqual(response_json(cancel), {"restored": ["clock/kitchen"]})
         self.assertIn(("clock/kitchen/custom/awtrix_addon", ""), self.publisher.published)
+
+    async def test_create_event_accepts_base64_asset_without_file(self):
+        image = Image.new("RGB", (2, 2), (255, 0, 0))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "inline-asset",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset_base64": encoded,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        payload = json.loads(self.publisher.published[-1][1])
+        bitmap = payload["draw"][0]["db"][4]
+        for y in range(8):
+            self.assertEqual(bitmap[y * 32 : y * 32 + 10], [0xFF0000] * 10)
+
+    async def test_base64_asset_validation(self):
+        image = Image.new("RGB", (2, 2), (0, 255, 0))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        ok = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"event_id": "data-url", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "asset_base64": data_url},
+        )
+        self.assertEqual(ok.status, 201)
+
+        conflict = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset": "icon.png",
+                "asset_base64": data_url,
+            },
+        )
+        self.assertEqual(conflict.status, 400)
+        self.assertEqual(response_json(conflict)["message"], "asset and asset_base64 are mutually exclusive")
+
+        invalid = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "asset_base64": "not base64"},
+        )
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(response_json(invalid)["message"], "asset could not be loaded")
 
     async def test_delete_event_by_id(self):
         response = await dispatch(
@@ -565,6 +632,10 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         Image.new("RGB", (2, 2), (255, 0, 0)).save(png_path)
         asset = load_asset(Path(self.tmp.name), "icon.png")
         self.assertEqual(asset.frames[0].size, (10, 8))
+        buffer = BytesIO()
+        Image.new("RGB", (20, 16), (0, 255, 0)).save(buffer, format="PNG")
+        inline_asset = load_asset_bytes(buffer.getvalue())
+        self.assertEqual(inline_asset.frames[0].size, (10, 8))
 
         even = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 2, tzinfo=timezone.utc))
         odd = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 3, tzinfo=timezone.utc))
@@ -721,6 +792,15 @@ class MetadataTests(unittest.TestCase):
         readme = REPO_ROOT.joinpath("README.md").read_text(encoding="utf-8")
         self.assertIn("python3 awtrix-addon/scripts/smoke.py", readme)
         self.assertNotIn("pytest tests", readme)
+
+    def test_app_info_readme_documents_asset_resolution(self):
+        readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+        self.assertIn("10x8", readme)
+        self.assertIn("32x8", readme)
+        self.assertIn("resized to `10x8`", readme)
+        self.assertIn("does not crop, pad, or preserve aspect ratio", readme)
+        self.assertIn("asset_base64", readme)
+        self.assertIn("Use either `asset` or `asset_base64`, not both.", readme)
 
     def test_config_yaml_contract(self):
         import yaml

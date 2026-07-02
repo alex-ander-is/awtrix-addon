@@ -48,6 +48,7 @@ rest_command:
         "clock_prefixes": {{ clock_prefixes | default([]) | to_json }},
         "duration_seconds": {{ duration_seconds | int(20) }},
         "asset": "{{ asset | default('') }}",
+        "asset_base64": "{{ asset_base64 | default('') }}",
         "sound": "{{ sound | default('') }}"
       }
 
@@ -95,6 +96,10 @@ Put PNG or GIF files in:
 /share/awtrix-addon/assets
 ```
 
+The visible asset area is exactly `10x8` pixels on the left side of the `32x8` AWTRIX canvas. Use `10x8` images when you want pixel-perfect output.
+
+Larger or smaller PNG/GIF files are accepted, but every frame is resized to `10x8` with nearest-neighbor scaling. The app does not crop, pad, or preserve aspect ratio, so a larger picture may look squeezed or stretched.
+
 Then pass the file name in `asset`, for example:
 
 ```yaml
@@ -107,3 +112,19 @@ data:
   asset: washing.gif
   sound: ""
 ```
+
+You can also send a PNG or GIF directly in the action without uploading a file. Put a plain base64 string or a `data:image/png;base64,...` / `data:image/gif;base64,...` URL in `asset_base64`:
+
+```yaml
+action: rest_command.awtrix_event
+data:
+  event_id: inline_icon
+  clock_prefixes:
+    - bedroom-clock
+  duration_seconds: 20
+  asset: ""
+  asset_base64: "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAICAIAAACgHXkX..."
+  sound: ""
+```
+
+Use either `asset` or `asset_base64`, not both.

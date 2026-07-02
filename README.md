@@ -88,6 +88,7 @@ rest_command:
         "clock_prefixes": {{ clock_prefixes | to_json }},
         "duration_seconds": {{ duration_seconds | int(30) }},
         "asset": "{{ asset | default('') }}",
+        "asset_base64": "{{ asset_base64 | default('') }}",
         "sound": "{{ sound | default('') }}"
       }
 
@@ -173,6 +174,17 @@ The add-on only publishes to:
 Restore is only an empty payload to `<prefix>/custom/<app_name>`. The add-on never publishes AWTRIX `settings`, brightness, palette, or forced `Clock` commands.
 
 Runtime events are in memory only. Refresh, restart, or version update does not resurrect old workflow state. Generated auth survives restart because `/data/auth.json` is the only persisted runtime file.
+
+## Assets
+
+The left asset area is exactly `10x8` pixels inside the full `32x8` AWTRIX canvas. PNG/GIF files loaded through `asset` and inline PNG/GIF payloads sent through `asset_base64` are both resized to `10x8` with nearest-neighbor scaling. The add-on does not crop, pad, or preserve aspect ratio.
+
+Use either:
+
+- `asset`: file name under `assets_dir`.
+- `asset_base64`: plain base64 PNG/GIF data, or a `data:image/png;base64,...` / `data:image/gif;base64,...` URL.
+
+Do not send both `asset` and `asset_base64` in the same event.
 
 ## Local safety
 

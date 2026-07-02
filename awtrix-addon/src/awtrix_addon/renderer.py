@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,9 +54,12 @@ def load_asset(assets_dir: Path, name: str | None) -> AssetAnimation:
     if root not in candidate.parents and candidate != root:
         raise ValueError("asset path escapes assets_dir")
     with Image.open(candidate) as image:
-        frames = tuple(_normalize_frame(frame) for frame in ImageSequence.Iterator(image))
-        loop = image.info.get("loop") == 0
-    return AssetAnimation(frames or (blank_asset(),), loop=loop)
+        return _load_animation(image)
+
+
+def load_asset_bytes(data: bytes) -> AssetAnimation:
+    with Image.open(BytesIO(data)) as image:
+        return _load_animation(image)
 
 
 def render_frame(asset: Image.Image, now: datetime) -> Image.Image:
@@ -83,6 +87,12 @@ def image_to_uint32_bitmap(image: Image.Image) -> list[int]:
 
 def _normalize_frame(frame: Image.Image) -> Image.Image:
     return frame.convert("RGBA").resize((ASSET_WIDTH, HEIGHT), Image.Resampling.NEAREST).convert("RGB")
+
+
+def _load_animation(image: Image.Image) -> AssetAnimation:
+    frames = tuple(_normalize_frame(frame) for frame in ImageSequence.Iterator(image))
+    loop = image.info.get("loop") == 0
+    return AssetAnimation(frames or (blank_asset(),), loop=loop)
 
 
 def _draw_clock(canvas: Image.Image, now: datetime) -> None:

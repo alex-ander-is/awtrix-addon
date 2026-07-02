@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +11,7 @@ from .auth import AuthManager, TokenManagedByOptions
 from .errors import ApiError, api_error_middleware, error_payload, json_error
 from .lifecycle import DuplicateEventId, EventSpec, EventStore
 from .mqtt import Publisher
-from .renderer import load_asset
+from .renderer import load_asset, load_asset_bytes
 from .settings import Settings, StartupConfigError, invalid_prefix_details, settings_from_options, validate_request_prefixes
 
 
@@ -97,13 +99,7 @@ async def create_event(request: web.Request) -> web.Response:
     duration = body.get("duration_seconds", 30)
     if not isinstance(duration, int) or duration <= 0:
         raise ApiError(400, "bad_request", "duration_seconds must be a positive integer")
-    asset_name = body.get("asset")
-    if asset_name is not None and not isinstance(asset_name, str):
-        raise ApiError(400, "bad_request", "asset must be a string")
-    try:
-        asset = load_asset(settings.assets_dir, asset_name)
-    except (FileNotFoundError, ValueError, OSError):
-        raise ApiError(400, "bad_request", "asset could not be loaded")
+    asset = _request_asset(settings, body)
 
     spec = EventSpec(
         event_id=body.get("event_id") if isinstance(body.get("event_id"), str) else None,
@@ -119,6 +115,33 @@ async def create_event(request: web.Request) -> web.Response:
     except DuplicateEventId:
         raise ApiError(409, "duplicate_event_id", "event_id already exists")
     return web.json_response({"event_id": event_id, "clock_prefixes": list(clock_prefixes)}, status=201)
+
+
+def _request_asset(settings: Settings, body: dict[str, Any]):
+    asset_name = body.get("asset")
+    asset_base64 = body.get("asset_base64")
+    if asset_name is not None and not isinstance(asset_name, str):
+        raise ApiError(400, "bad_request", "asset must be a string")
+    if asset_base64 is not None and not isinstance(asset_base64, str):
+        raise ApiError(400, "bad_request", "asset_base64 must be a string")
+    if asset_name and asset_base64:
+        raise ApiError(400, "bad_request", "asset and asset_base64 are mutually exclusive")
+    try:
+        if asset_base64:
+            return load_asset_bytes(_decode_asset_base64(asset_base64))
+        return load_asset(settings.assets_dir, asset_name)
+    except (FileNotFoundError, ValueError, OSError, binascii.Error):
+        raise ApiError(400, "bad_request", "asset could not be loaded")
+
+
+def _decode_asset_base64(value: str) -> bytes:
+    encoded = value.strip()
+    if encoded.startswith("data:"):
+        header, separator, payload = encoded.partition(",")
+        if not separator or ";base64" not in header:
+            raise ValueError("asset_base64 data URL must be base64")
+        encoded = payload
+    return base64.b64decode(encoded, validate=True)
 
 
 async def cancel_current(request: web.Request) -> web.Response:

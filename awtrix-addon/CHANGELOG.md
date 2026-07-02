@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.6
+
+- Accept inline base64 PNG/GIF event assets so Home Assistant automations can render an image without uploading it to the shared assets directory.
+
 ## 0.1.5
 
 - Add App Info README usage instructions with setup, token, REST command, and simple automation examples.
