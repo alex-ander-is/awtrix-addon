@@ -1,6 +1,6 @@
-# AWTRIX Add-on
+# AWTRIX App
 
-This add-on lets Home Assistant show a temporary custom picture on AWTRIX, then clears only that custom app when the event ends.
+This App lets Home Assistant show a temporary custom picture on AWTRIX, then clears only that custom app when the event ends.
 
 It does not change AWTRIX brightness, palette, settings, or force the Clock app.
 
@@ -17,7 +17,7 @@ assets_dir: /share/awtrix-addon/assets
 auth_token: ""
 ```
 
-Leave `auth_token` empty to let the add-on generate one. After start, copy this line from the add-on log into Home Assistant `secrets.yaml`:
+Leave `auth_token` empty to let the App generate one. After start, copy this line from the App log into Home Assistant `secrets.yaml`:
 
 ```yaml
 awtrix_addon_authorization: Bearer <generated-token>
@@ -79,7 +79,7 @@ data:
   sound: ""
 ```
 
-Cancel the current add-on display:
+Cancel the current App display:
 
 ```yaml
 action: rest_command.awtrix_cancel_current

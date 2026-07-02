@@ -1,5 +1,5 @@
-name: AWTRIX Add-on
-version: "0.1.6"
+name: AWTRIX App
+version: "0.1.7"
 slug: awtrix_addon
 description: Controlled AWTRIX event overlays for Home Assistant
 url: https://github.com/alex-ander-is/awtrix-addon

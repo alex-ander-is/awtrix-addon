@@ -5,6 +5,7 @@ import base64
 from io import BytesIO
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,16 @@ def is_forbidden_artifact(path: Path) -> bool:
         or name.endswith(".log")
         or FORBIDDEN_ARTIFACT_IMAGE_RE.fullmatch(name) is not None
     )
+
+
+def is_ignored_untracked_file(path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "--", path.relative_to(REPO_ROOT).as_posix()],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def repository_files() -> list[Path]:
@@ -385,7 +396,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_regenerate_managed_by_options(self):
         response = await dispatch(self.app, regenerate_auth, "/api/auth/regenerate", headers=self.auth(), body={})
         self.assertEqual(response.status, 409)
-        self.assertEqual(response_json(response), {"error": "managed_by_options", "message": "Token is managed by add-on options", "details": {}})
+        self.assertEqual(response_json(response), {"error": "managed_by_options", "message": "Token is managed by App options", "details": {}})
 
     async def test_startup_config_failed_is_redacted_and_publishes_nothing(self):
         publisher = MemoryPublisher()
@@ -469,7 +480,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             lines = main_module.startup_log_lines(settings, AuthManager(data_dir))
 
             self.assertEqual(json.loads(lines[0]), {"status": "started", "port": 8099, "auth": "generated"})
-            self.assertEqual(lines[1], "AWTRIX add-on generated auth token.")
+            self.assertEqual(lines[1], "AWTRIX App generated auth token.")
             token = json.loads((data_dir / "auth.json").read_text(encoding="utf-8"))["token"]
             self.assertIsInstance(token, str)
             self.assertEqual(lines[2], "Use in HA secrets.yaml: awtrix_addon_authorization: Bearer " + token)
@@ -693,8 +704,27 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_displayed_terminology_uses_apps(self):
+        legacy_term = re.compile(r"\badd-" + r"ons?\b", re.IGNORECASE)
+        text_paths = [
+            path
+            for path in repository_files()
+            if path.suffix in {".md", ".py", ".toml", ".yaml", ".yml"}
+        ]
+        matches = [
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in text_paths
+            if legacy_term.search(path.read_text(encoding="utf-8", errors="ignore"))
+        ]
+
+        self.assertEqual(matches, [])
+
     def test_repository_contains_no_local_artifacts(self):
-        forbidden = sorted(path.relative_to(REPO_ROOT).as_posix() for path in repository_files() if is_forbidden_artifact(path))
+        forbidden = sorted(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in repository_files()
+            if is_forbidden_artifact(path) and not is_ignored_untracked_file(path)
+        )
 
         self.assertEqual(forbidden, [])
 
@@ -705,6 +735,7 @@ class MetadataTests(unittest.TestCase):
         dockerfile = ROOT.joinpath("Dockerfile").read_text(encoding="utf-8")
         self.assertEqual(repository["url"], "https://github.com/alex-ander-is/awtrix-addon")
         self.assertEqual(repository["maintainer"], "alex-ander-is")
+        self.assertEqual(repository["name"], "AWTRIX Apps")
         self.assertTrue(ROOT.joinpath("config.yaml").is_file())
         self.assertTrue(ROOT.joinpath("Dockerfile").is_file())
         self.assertTrue(ROOT.joinpath("CHANGELOG.md").is_file())
@@ -806,6 +837,7 @@ class MetadataTests(unittest.TestCase):
         import yaml
 
         config = yaml.safe_load(ROOT.joinpath("config.yaml").read_text())
+        self.assertEqual(config["name"], "AWTRIX App")
         self.assertFalse(config["ingress"])
         self.assertEqual(config["ports"]["8099/tcp"], 8099)
         self.assertEqual(config["arch"], ["aarch64", "amd64"])

@@ -1,6 +1,6 @@
-# AWTRIX Add-on
+# AWTRIX App
 
-Home Assistant add-on service that publishes short AWTRIX custom-app overlays without changing AWTRIX settings, brightness, palettes, or the forced Clock app.
+Home Assistant App service that publishes short AWTRIX custom-app overlays without changing AWTRIX settings, brightness, palettes, or the forced Clock app.
 
 ## Install in Home Assistant
 
@@ -13,12 +13,12 @@ Home Assistant add-on service that publishes short AWTRIX custom-app overlays wi
 https://github.com/alex-ander-is/awtrix-addon
 ```
 
-5. Click `Add`, close the dialog, and wait until `AWTRIX Add-on` appears in the store.
-6. Open `AWTRIX Add-on`, click `Install`, then open the `Configuration` tab.
+5. Click `Add`, close the dialog, and wait until `AWTRIX App` appears in the store.
+6. Open `AWTRIX App`, click `Install`, then open the `Configuration` tab.
 7. Set at least `clock_prefixes`, `default_clock_prefixes`, and `auth_token`.
 8. Click `Save`, then `Start`.
 
-## Add-on options
+## App options
 
 ```yaml
 app_name: awtrix_addon
@@ -34,7 +34,7 @@ auth_token: "optional-fixed-token"
 - `clock_prefixes`: required non-empty allowlist of AWTRIX MQTT topic prefixes.
 - `default_clock_prefixes`: optional subset of `clock_prefixes`; omitted means all clocks.
 - `assets_dir`: directory for PNG/GIF assets normalized to a 10x8 left-side area.
-- `auth_token`: optional fixed bearer token. If omitted, the add-on generates one in `/data/auth.json`.
+- `auth_token`: optional fixed bearer token. If omitted, the App generates one in `/data/auth.json`.
 
 Unknown option keys or unsafe configured values fail startup before MQTT is started.
 
@@ -62,9 +62,9 @@ awtrix_addon_authorization: Bearer optional-fixed-token
 
 ## Token recovery
 
-If `auth_token` is set in add-on options, that option always wins and `/api/auth/regenerate` returns `409 managed_by_options`.
+If `auth_token` is set in App options, that option always wins and `/api/auth/regenerate` returns `409 managed_by_options`.
 
-If `auth_token` is omitted, the generated token is stored only in `/data/auth.json`. To recover, read that file from the add-on data directory. To rotate it:
+If `auth_token` is omitted, the generated token is stored only in `/data/auth.json`. To recover, read that file from the App data directory. To rotate it:
 
 ```bash
 curl -X POST \
@@ -150,7 +150,7 @@ All API errors are JSON:
 ```
 
 ```json
-{"error":"managed_by_options","message":"Token is managed by add-on options","details":{}}
+{"error":"managed_by_options","message":"Token is managed by App options","details":{}}
 ```
 
 ```json
@@ -165,19 +165,19 @@ Invalid request targets publish zero MQTT payloads, including zero restore clear
 
 ## MQTT behavior
 
-The add-on only publishes to:
+The App only publishes to:
 
 - `<prefix>/custom/<app_name>`
 - `<prefix>/sound`
 - `<prefix>/rtttl`
 
-Restore is only an empty payload to `<prefix>/custom/<app_name>`. The add-on never publishes AWTRIX `settings`, brightness, palette, or forced `Clock` commands.
+Restore is only an empty payload to `<prefix>/custom/<app_name>`. The App never publishes AWTRIX `settings`, brightness, palette, or forced `Clock` commands.
 
 Runtime events are in memory only. Refresh, restart, or version update does not resurrect old workflow state. Generated auth survives restart because `/data/auth.json` is the only persisted runtime file.
 
 ## Assets
 
-The left asset area is exactly `10x8` pixels inside the full `32x8` AWTRIX canvas. PNG/GIF files loaded through `asset` and inline PNG/GIF payloads sent through `asset_base64` are both resized to `10x8` with nearest-neighbor scaling. The add-on does not crop, pad, or preserve aspect ratio.
+The left asset area is exactly `10x8` pixels inside the full `32x8` AWTRIX canvas. PNG/GIF files loaded through `asset` and inline PNG/GIF payloads sent through `asset_base64` are both resized to `10x8` with nearest-neighbor scaling. The App does not crop, pad, or preserve aspect ratio.
 
 Use either:
 

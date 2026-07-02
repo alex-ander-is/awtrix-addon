@@ -178,7 +178,7 @@ async def regenerate_auth(request: web.Request) -> web.Response:
     try:
         token = auth.regenerate()
     except TokenManagedByOptions:
-        raise ApiError(409, "managed_by_options", "Token is managed by add-on options")
+        raise ApiError(409, "managed_by_options", "Token is managed by App options")
     return web.json_response({"token": token})
 
 

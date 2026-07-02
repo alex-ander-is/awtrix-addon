@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.7
+
+- Use Home Assistant's current Apps terminology in displayed names, documentation, and runtime messages.
+
 ## 0.1.6
 
 - Accept inline base64 PNG/GIF event assets so Home Assistant automations can render an image without uploading it to the shared assets directory.
@@ -16,7 +20,7 @@ Released sections are immutable. Put every new change into a new version section
 
 ## 0.1.3
 
-- Print the generated bearer token and ready-to-copy Home Assistant YAML snippets in the add-on startup log.
+- Print the generated bearer token and ready-to-copy Home Assistant YAML snippets in the App startup log.
 
 ## 0.1.2
 
@@ -29,4 +33,4 @@ Released sections are immutable. Put every new change into a new version section
 
 ## 0.1.0
 
-- Add the AWTRIX event renderer add-on with authenticated HTTP events, MQTT custom-app rendering, safe restore behavior, and live canvas verification helpers.
+- Add the AWTRIX event renderer App with authenticated HTTP events, MQTT custom-app rendering, safe restore behavior, and live canvas verification helpers.

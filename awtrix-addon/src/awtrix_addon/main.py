@@ -55,7 +55,7 @@ def startup_log_lines(settings: Settings, auth: AuthManager) -> list[str]:
     token = auth.active_token()
     lines.extend(
         [
-            "AWTRIX add-on generated auth token.",
+            "AWTRIX App generated auth token.",
             f"Use in HA secrets.yaml: awtrix_addon_authorization: Bearer {token}",
             "Token is stored in /data/auth.json",
         ]

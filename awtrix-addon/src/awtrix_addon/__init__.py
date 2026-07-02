@@ -1,4 +1,4 @@
-"""AWTRIX Home Assistant add-on service."""
+"""AWTRIX Home Assistant App service."""
 
 __all__ = ["__version__"]
 
