@@ -4,7 +4,9 @@ import asyncio
 import base64
 from io import BytesIO
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,7 +27,7 @@ from awtrix_addon import main as main_module
 from awtrix_addon.auth import AuthManager, TokenManagedByOptions
 from awtrix_addon.errors import api_error_middleware
 from awtrix_addon.lifecycle import DuplicateEventId, EventSpec, EventStore
-from awtrix_addon.mqtt import MemoryPublisher
+from awtrix_addon.mqtt import MemoryPublisher, PahoPublisher
 from awtrix_addon.renderer import AssetAnimation, blank_asset, load_asset, load_asset_bytes, render_frame
 from awtrix_addon.settings import StartupConfigError, settings_from_options
 
@@ -64,6 +66,61 @@ class FakeRequest:
         if self._body is None:
             raise ValueError("empty")
         return self._body
+
+
+class FakeSupervisorResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+class FakePahoClient:
+    def __init__(self, connack, *, connect_result=0):
+        self.connack = connack
+        self.connect_result = connect_result
+        self.calls: list[str] = []
+        self.username_password = None
+        self.on_connect = None
+
+    def username_pw_set(self, username, password):
+        self.calls.append("username_pw_set")
+        self.username_password = (username, password)
+
+    def connect(self, host, port, keepalive):
+        self.calls.append("connect")
+        self.address = (host, port, keepalive)
+        return self.connect_result
+
+    def loop_start(self):
+        self.calls.append("loop_start")
+        if self.connack is not None:
+            self.on_connect(self, None, None, self.connack)
+
+    def loop_stop(self):
+        self.calls.append("loop_stop")
+
+    def disconnect(self):
+        self.calls.append("disconnect")
+
+
+class FailOncePublisher(MemoryPublisher):
+    def __init__(self):
+        super().__init__()
+        self.fail_topic: str | None = None
+
+    async def publish(self, topic: str, payload: str | bytes) -> None:
+        if topic == self.fail_topic:
+            self.fail_topic = None
+            raise RuntimeError("planned publish failure")
+        await super().publish(topic, payload)
 
 
 async def dispatch(app, handler, path, *, headers=None, body=None, match_info=None):
@@ -191,6 +248,108 @@ class ConfigAuthTests(unittest.TestCase):
                 option.regenerate()
 
 
+class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
+    def test_supervisor_credentials_use_bearer_and_ignore_mqtt_environment(self):
+        supervisor_token = "supervisor-token"
+        mqtt_password = "mqtt-password"
+        response = FakeSupervisorResponse(
+            {"data": {"host": "core-mosquitto", "port": 1883, "username": "awtrix", "password": mqtt_password}}
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SUPERVISOR_TOKEN": supervisor_token,
+                    "MQTT_HOST": "ignored-host",
+                    "MQTT_PORT": "1999",
+                    "MQTT_USERNAME": "ignored-user",
+                    "MQTT_PASSWORD": "ignored-password",
+                },
+                clear=True,
+            ),
+            patch.object(main_module, "urlopen", return_value=response) as opener,
+        ):
+            credentials = main_module.load_mqtt_credentials()
+
+        self.assertEqual(credentials, ("core-mosquitto", 1883, "awtrix", mqtt_password))
+        request = opener.call_args.args[0]
+        self.assertEqual(request.full_url, "http://supervisor/services/mqtt")
+        self.assertEqual(request.get_header("Authorization"), f"Bearer {supervisor_token}")
+
+    def test_invalid_supervisor_credentials_never_fall_back_or_leak(self):
+        password = "do-not-leak"
+        with (
+            patch.dict(
+                os.environ,
+                {"SUPERVISOR_TOKEN": "supervisor-token", "MQTT_HOST": "fallback", "MQTT_PASSWORD": password},
+                clear=True,
+            ),
+            patch.object(main_module, "urlopen", return_value=FakeSupervisorResponse({"data": {"host": "", "port": "1883"}})),
+            self.assertRaises(StartupConfigError) as raised,
+        ):
+            main_module.load_mqtt_credentials()
+
+        self.assertEqual(raised.exception.code, "mqtt_credentials_invalid")
+        self.assertNotIn(password, str(raised.exception))
+        self.assertNotIn(password, json.dumps(raised.exception.redacted()))
+
+    def test_supervisor_failure_is_redacted_from_startup_app(self):
+        supervisor_token = "supervisor-token"
+        mqtt_password = "do-not-leak"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            options_file = root / "options.json"
+            options_file.write_text(json.dumps(base_options(root)), encoding="utf-8")
+            captured = {}
+
+            def capture_run_app(app, **_kwargs):
+                captured["app"] = app
+
+            with (
+                patch.dict(os.environ, {"SUPERVISOR_TOKEN": supervisor_token}, clear=True),
+                patch.object(main_module, "urlopen", side_effect=OSError(mqtt_password)),
+                patch.object(main_module.web, "run_app", side_effect=capture_run_app),
+            ):
+                main_module.run(options_file, root / "data")
+
+            app = captured["app"]
+            error = app["startup_error"]
+            self.assertEqual(error.code, "mqtt_credentials_unavailable")
+            self.assertNotIn(supervisor_token, str(error))
+            self.assertNotIn(mqtt_password, json.dumps(error.redacted()))
+            self.assertNotIn("publisher", app)
+
+    async def test_publisher_waits_for_accepted_connack_before_ready(self):
+        client = FakePahoClient(connack=0)
+        publisher = PahoPublisher(
+            "core-mosquitto", 1883, "awtrix", "mqtt-password", client_factory=lambda: client, connect_timeout=0.01
+        )
+
+        await publisher.start()
+
+        self.assertIs(publisher._client, client)
+        self.assertEqual(client.username_password, ("awtrix", "mqtt-password"))
+        self.assertLess(client.calls.index("username_pw_set"), client.calls.index("connect"))
+        self.assertIsNone(publisher._username)
+        self.assertIsNone(publisher._password)
+
+    async def test_unready_connection_failures_clean_up_without_ready_publisher(self):
+        for connack, connect_result, message in ((5, 0, "rejected"), (None, 0, "timed out"), (None, 1, "connect failed")):
+            with self.subTest(connack=connack, connect_result=connect_result):
+                client = FakePahoClient(connack=connack, connect_result=connect_result)
+                publisher = PahoPublisher(
+                    "core-mosquitto", 1883, "awtrix", "mqtt-password", client_factory=lambda: client, connect_timeout=0.01
+                )
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    await publisher.start()
+
+                self.assertIsNone(publisher._client)
+                self.assertEqual(client.calls[-2:], ["loop_stop", "disconnect"])
+                self.assertIsNone(publisher._username)
+                self.assertIsNone(publisher._password)
+
+
 class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -239,18 +398,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_create_cancel_and_allowed_topics(self):
+        melody = "chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p"
         response = await dispatch(
             self.app,
             create_event,
             "/api/events",
             headers=self.auth(),
-            body={"event_id": "evt-1", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "sound": "beep"},
+            body={"event_id": "evt-1", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "rtttl": melody},
         )
         self.assertEqual(response.status, 201)
         self.assertEqual(response_json(response), {"event_id": "evt-1", "clock_prefixes": ["clock/kitchen"]})
         topics = [topic for topic, _payload in self.publisher.published]
         self.assertIn("clock/kitchen/custom/awtrix_addon", topics)
-        self.assertIn("clock/kitchen/sound", topics)
+        self.assertIn("clock/kitchen/rtttl", topics)
+        self.assertIn(("clock/kitchen/rtttl", melody), self.publisher.published)
         self.assertNotIn("clock/kitchen/settings", topics)
         self.assertTrue(all("/brightness" not in topic and "/palette" not in topic for topic in topics))
 
@@ -264,6 +425,118 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancel.status, 200)
         self.assertEqual(response_json(cancel), {"restored": ["clock/kitchen"]})
         self.assertIn(("clock/kitchen/custom/awtrix_addon", ""), self.publisher.published)
+
+    async def test_library_melody_resolves_default_and_personal(self):
+        personal_dir = Path(self.data.name) / "library" / "melodies" / "Personal"
+        personal_dir.mkdir(parents=True)
+        personal = "Personal_chime:d=8,o=6,b=180:c,e,g"
+        personal_dir.joinpath("My_chime.rtttl").write_text(personal, encoding="utf-8")
+
+        default_response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"event_id": "default", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "melody": "Default/Arkanoid"},
+        )
+        personal_response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"event_id": "personal", "clock_prefixes": ["clock/office"], "duration_seconds": 10, "melody": "Personal/My_chime"},
+        )
+
+        self.assertEqual(default_response.status, 201)
+        self.assertEqual(personal_response.status, 201)
+        self.assertIn(
+            ("clock/kitchen/rtttl", "Arkanoid:d=4,o=5,b=140:8g6,16p,16g.6,2a#6,32p,8a6,8g6,8f6,8a6,2g6"),
+            self.publisher.published,
+        )
+        self.assertIn(("clock/office/rtttl", personal), self.publisher.published)
+
+    async def test_personal_melody_persists_for_new_app_instance(self):
+        personal_dir = Path(self.data.name) / "library" / "melodies" / "Personal"
+        personal_dir.mkdir(parents=True)
+        melody = "Persistent:d=4,o=5,b=120:c,e,g"
+        personal_dir.joinpath("Persistent.rtttl").write_text(melody, encoding="utf-8")
+        new_publisher = MemoryPublisher()
+        new_app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), new_publisher, start_tasks=False)
+
+        response = await dispatch(
+            new_app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "melody": "Personal/Persistent"},
+        )
+
+        self.assertEqual(response.status, 201)
+        self.assertIn(("clock/kitchen/rtttl", melody), new_publisher.published)
+
+    async def test_invalid_melody_and_rtttl_requests_leave_no_state_and_allow_same_id_retry(self):
+        personal_dir = Path(self.data.name) / "library" / "melodies" / "Personal"
+        personal_dir.mkdir(parents=True)
+        personal_dir.joinpath("Not_utf8.rtttl").write_bytes(b"\xff")
+        personal_dir.joinpath("Empty.rtttl").write_text(" \n", encoding="utf-8")
+        personal_dir.joinpath("Malformed.rtttl").write_text("not an RTTTL expression", encoding="utf-8")
+        personal_dir.joinpath("Bad_default.rtttl").write_text("Bad:d=3,o=5,b=120:c", encoding="utf-8")
+        personal_dir.joinpath("Bad_note.rtttl").write_text("Bad:d=4,o=5,b=120:h", encoding="utf-8")
+        cases = [
+            ({"melody": ["Default/Arkanoid"]}, 400, {"error": "invalid_melody", "message": "melody must be a string", "details": {}}),
+            ({"melody": "default/Arkanoid"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Default/Arkanoid/extra"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Default/.hidden"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Default/Missing"}, 404, {"error": "melody_not_found", "message": "Melody was not found", "details": {"melody": "Default/Missing"}}),
+            ({"melody": "Personal/Not_utf8"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Personal/Empty"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Personal/Malformed"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Personal/Bad_default"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Personal/Bad_note"}, 400, {"error": "invalid_melody", "message": "melody must be a valid library reference", "details": {}}),
+            ({"melody": "Default/Arkanoid", "rtttl": "Direct:d=4,o=5,b=120:c"}, 400, {"error": "invalid_melody", "message": "melody and rtttl are mutually exclusive", "details": {}}),
+            ({"rtttl": ["c"]}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a string", "details": {}}),
+            ({"rtttl": "not an RTTTL expression"}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a valid RTTTL expression", "details": {}}),
+            ({"rtttl": "Bad:d=3,o=5,b=120:c"}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a valid RTTTL expression", "details": {}}),
+            ({"rtttl": "Bad:d=4,o=3,b=120:c"}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a valid RTTTL expression", "details": {}}),
+            ({"rtttl": "Bad:d=4,o=5,b=10:c"}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a valid RTTTL expression", "details": {}}),
+            ({"rtttl": "Bad:d=4,o=5,b=120:h"}, 400, {"error": "invalid_rtttl", "message": "rtttl must be a valid RTTTL expression", "details": {}}),
+        ]
+        for extra, status, expected in cases:
+            with self.subTest(extra=extra):
+                publisher = MemoryPublisher()
+                app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
+                event_id = "retryable"
+                response = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={"event_id": event_id, "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, **extra},
+                )
+                self.assertEqual(response.status, status)
+                self.assertEqual(response_json(response), expected)
+                self.assertEqual(publisher.published, [])
+                self.assertEqual(app["store"].snapshot(), {})
+                self.assertEqual(app["store"]._events, {})
+
+                retry = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={
+                        "event_id": event_id,
+                        "clock_prefixes": ["clock/kitchen"],
+                        "duration_seconds": 10,
+                        "rtttl": "Retry:d=4,o=5,b=120:c",
+                    },
+                )
+                self.assertEqual(retry.status, 201)
+                self.assertEqual(response_json(retry), {"event_id": event_id, "clock_prefixes": ["clock/kitchen"]})
+                self.assertEqual(
+                    app["store"].snapshot(), {"clock/kitchen": {"event_id": event_id, "generation": 1}}
+                )
+                await app["store"].cancel_event(event_id)
 
     async def test_create_event_accepts_base64_asset_without_file(self):
         image = Image.new("RGB", (2, 2), (255, 0, 0))
@@ -605,6 +878,45 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reused, "doorbell")
         self.assertEqual(store.snapshot()["clock/a"]["event_id"], "doorbell")
 
+    async def _assert_create_failure_rolls_back_and_retries(self, spec, fail_topic):
+        publisher = FailOncePublisher()
+        store = EventStore(self.settings, publisher, now=self.now, start_tasks=False)
+        await store.create(self.spec("old", ["clock/a", "clock/b"]))
+        snapshot = store.snapshot()
+        generations = dict(store._generations)
+        old_states = dict(store._events["old"].states)
+        old_bindings = dict(store._events["old"].bindings)
+        old_frame_index = store._events["old"].frame_index
+        publisher.fail_topic = fail_topic
+
+        with self.assertRaisesRegex(RuntimeError, "planned publish failure"):
+            await store.create(spec)
+
+        self.assertEqual(store.snapshot(), snapshot)
+        self.assertEqual(dict(store._generations), generations)
+        self.assertEqual(store._events["old"].states, old_states)
+        self.assertEqual(store._events["old"].bindings, old_bindings)
+        self.assertEqual(store._events["old"].frame_index, old_frame_index)
+        self.assertNotIn(spec.event_id, store._events)
+        await store.render_once("old")
+        self.assertEqual(await store.create(spec), spec.event_id)
+        self.assertEqual(store.snapshot(), {"clock/a": {"event_id": spec.event_id, "generation": 2}, "clock/b": {"event_id": spec.event_id, "generation": 2}})
+        self.assertEqual(await store.cancel_event("old"), [])
+
+    async def test_second_frame_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
+        spec = self.spec("new-frame", ["clock/a", "clock/b"])
+        await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/custom/awtrix_addon")
+
+    async def test_second_rtttl_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
+        spec = EventSpec(
+            "new-rtttl",
+            ("clock/a", "clock/b"),
+            10,
+            AssetAnimation((blank_asset(),)),
+            rtttl="beep:d=4,o=5,b=100:c",
+        )
+        await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/rtttl")
+
     async def test_expiry_boundary_and_shutdown_snapshot(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
         await store.create(self.spec("old", ["clock/a"]))
@@ -615,16 +927,18 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         await store.shutdown()
         self.assertEqual(self.publisher.published.count(("clock/a/custom/awtrix_addon", "")), 1)
 
-    async def test_sound_once_and_render_fresh_now(self):
+    async def test_rtttl_is_published_once_and_not_replayed_when_rendered(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
-        await store.create(EventSpec("evt", ("clock/a",), 10, AssetAnimation((blank_asset(),)), sound="beep"))
+        melody = "chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p"
+        await store.create(EventSpec("evt", ("clock/a",), 10, AssetAnimation((blank_asset(),)), rtttl=melody))
         self.current = self.current + timedelta(seconds=1)
         await store.render_once("evt")
-        sound_topics = [item for item in self.publisher.published if item == ("clock/a/sound", "beep")]
-        self.assertEqual(len(sound_topics), 1)
+        rtttl_messages = [item for item in self.publisher.published if item == ("clock/a/rtttl", melody)]
+        self.assertEqual(len(rtttl_messages), 1)
         custom_payloads = [payload for topic, payload in self.publisher.published if topic == "clock/a/custom/awtrix_addon"]
         self.assertEqual(len(custom_payloads), 2)
         self.assertNotEqual(custom_payloads[0], custom_payloads[1])
+
 
     async def test_render_loop_uses_one_second_cadence(self):
         intervals = []
@@ -819,10 +1133,19 @@ class MetadataTests(unittest.TestCase):
         self.assertIn(".codex-audit", lines)
         self.assertIn(".git", lines)
 
-    def test_smoke_command_is_documented(self):
-        readme = REPO_ROOT.joinpath("README.md").read_text(encoding="utf-8")
-        self.assertIn("python3 awtrix-addon/scripts/smoke.py", readme)
-        self.assertNotIn("pytest tests", readme)
+    def test_smoke_commands_are_documented_from_their_roots(self):
+        repository_readme = REPO_ROOT.joinpath("README.md").read_text(encoding="utf-8")
+        addon_readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+        self.assertIn("python3 awtrix-addon/scripts/smoke.py", repository_readme)
+        self.assertIn("python3 scripts/smoke.py", addon_readme)
+        self.assertNotIn("pytest tests", repository_readme)
+        self.assertNotIn("pytest tests", addon_readme)
+
+    def test_readmes_use_verified_loopback_service_url(self):
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("http://127.0.0.1:8099", text)
+            self.assertNotIn("homeassistant.local:8099", text)
 
     def test_app_info_readme_documents_asset_resolution(self):
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
@@ -832,6 +1155,102 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("does not crop, pad, or preserve aspect ratio", readme)
         self.assertIn("asset_base64", readme)
         self.assertIn("Use either `asset` or `asset_base64`, not both.", readme)
+
+    def test_melody_library_is_packaged_and_documented(self):
+        default_melody = ROOT / "src" / "awtrix_addon" / "library" / "melodies" / "Default" / "Arkanoid.rtttl"
+        self.assertTrue(default_melody.is_file())
+        self.assertIn("Arkanoid:d=4,o=5,b=140", default_melody.read_text(encoding="utf-8"))
+        self.assertIn("library/melodies/Default/*.rtttl", ROOT.joinpath("pyproject.toml").read_text(encoding="utf-8"))
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"melody"', text)
+            self.assertIn("Default/Arkanoid", text)
+            self.assertIn("/data/library/melodies/Personal", text)
+
+    def test_installed_package_contains_default_arkanoid_resource(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory)
+            project = temporary_root / "project"
+            target = temporary_root / "site"
+            shutil.copytree(ROOT, project, ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__"))
+            self.assertEqual(project.joinpath("pyproject.toml").read_bytes(), ROOT.joinpath("pyproject.toml").read_bytes())
+            packaging_python = self._local_pep517_python()
+            pip_root = temporary_root / "pip-root"
+            subprocess.run([str(packaging_python), "-m", "ensurepip", "--root", str(pip_root)], check=True, capture_output=True)
+            site_packages = next(pip_root.glob("**/site-packages"))
+            environment = {**os.environ, "PYTHONPATH": str(site_packages)}
+            subprocess.run(
+                [
+                    str(packaging_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    "--no-build-isolation",
+                    "--target",
+                    str(target),
+                    str(project),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            verifier = """
+import sys
+from pathlib import Path
+target = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(target))
+import awtrix_addon.melodies as melodies
+origin = Path(melodies.__file__).resolve()
+assert origin.is_relative_to(target), origin
+melody = origin.with_name('library') / 'melodies' / 'Default' / 'Arkanoid.rtttl'
+assert melody.read_text(encoding='utf-8') == 'Arkanoid:d=4,o=5,b=140:8g6,16p,16g.6,2a#6,32p,8a6,8g6,8f6,8a6,2g6\\n'
+"""
+            subprocess.run(
+                [str(packaging_python), "-I", "-c", verifier, str(target)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    def _local_pep517_python(self) -> Path:
+        candidates = (Path(sys.executable), Path("/opt/local/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"))
+        check = (
+            "import sys, setuptools; "
+            "assert sys.version_info >= (3, 11); "
+            "assert tuple(map(int, setuptools.__version__.split('.')[:2])) >= (68, 0)"
+        )
+        for candidate in candidates:
+            if candidate.is_file() and subprocess.run([str(candidate), "-c", check], capture_output=True).returncode == 0:
+                return candidate
+        self.fail("No local Python with Python >=3.11 and setuptools >=68 is available for unchanged pyproject packaging proof")
+
+    def test_readmes_document_the_stable_melody_contract(self):
+        required = (
+            '"melody": "{{ melody | default(\'\') }}"',
+            '"rtttl": "{{ rtttl | default(\'\') }}"',
+            'melody: "Default/Arkanoid"',
+            "/data/library/melodies/Personal",
+            "Names are case-sensitive",
+            "An empty `melody` or `rtttl` means no melody.",
+            "Specify either `melody` or `rtttl`, not both.",
+            "RTTTL defaults must include exactly `d`, `o`, and `b`",
+            "tempo is `25` through `900`",
+            '{"error":"invalid_melody","message":"melody must be a string","details":{}}',
+            '{"error":"invalid_melody","message":"melody must be a valid library reference","details":{}}',
+            '{"error":"melody_not_found","message":"Melody was not found","details":{"melody":"Default/Missing"}}',
+            '{"error":"invalid_rtttl","message":"rtttl must be a string","details":{}}',
+            '{"error":"invalid_rtttl","message":"rtttl must be a valid RTTTL expression","details":{}}',
+            '{"error":"invalid_melody","message":"melody and rtttl are mutually exclusive","details":{}}',
+            "creates no event and publishes no MQTT payload",
+            "same `event_id` can be retried safely",
+        )
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            for value in required:
+                with self.subTest(path=path, value=value):
+                    self.assertIn(value, text)
 
     def test_config_yaml_contract(self):
         import yaml

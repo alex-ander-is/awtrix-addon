@@ -26,8 +26,8 @@ awtrix_addon_authorization: Bearer <generated-token>
 Also add these URLs to `secrets.yaml`:
 
 ```yaml
-awtrix_addon_events_url: http://homeassistant.local:8099/api/events
-awtrix_addon_current_event_url: http://homeassistant.local:8099/api/events/current
+awtrix_addon_events_url: http://127.0.0.1:8099/api/events
+awtrix_addon_current_event_url: http://127.0.0.1:8099/api/events/current
 ```
 
 ## Home Assistant REST Commands
@@ -49,7 +49,8 @@ rest_command:
         "duration_seconds": {{ duration_seconds | int(20) }},
         "asset": "{{ asset | default('') }}",
         "asset_base64": "{{ asset_base64 | default('') }}",
-        "sound": "{{ sound | default('') }}"
+        "melody": "{{ melody | default('') }}",
+        "rtttl": "{{ rtttl | default('') }}"
       }
 
   awtrix_cancel_current:
@@ -76,7 +77,7 @@ data:
     - bedroom-clock
   duration_seconds: 20
   asset: ""
-  sound: ""
+  melody: "Default/Arkanoid"
 ```
 
 Cancel the current App display:
@@ -110,7 +111,7 @@ data:
     - bedroom-clock
   duration_seconds: 30
   asset: washing.gif
-  sound: ""
+  rtttl: ""
 ```
 
 You can also send a PNG or GIF directly in the action without uploading a file. Put a plain base64 string or a `data:image/png;base64,...` / `data:image/gif;base64,...` URL in `asset_base64`:
@@ -124,7 +125,38 @@ data:
   duration_seconds: 20
   asset: ""
   asset_base64: "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAICAIAAACgHXkX..."
-  sound: ""
+  rtttl: ""
 ```
 
 Use either `asset` or `asset_base64`, not both.
+
+## Melodies
+
+Use `melody` for a managed reference such as `Default/Arkanoid` or `Personal/My_chime`. Names are case-sensitive and always include the namespace. Default melodies ship with the App and update with it. Add Personal UTF-8 `.rtttl` files manually under `/data/library/melodies/Personal`, for example `/data/library/melodies/Personal/My_chime.rtttl`; they survive restarts and App updates.
+
+Use `rtttl` for a direct one-off expression, for example `chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p`. Specify either `melody` or `rtttl`, not both. A missing library name returns `404 melody_not_found` without creating an event or publishing MQTT. The resolved RTTTL text is published once to `<prefix>/rtttl` immediately after creating the event. It is not replayed when the event is rendered, canceled, expires, or shuts down.
+
+### Melody error contract
+
+`melody` is case-sensitive: only `Default/<name>` and `Personal/<name>` are valid references. An empty `melody` or `rtttl` means no melody. A reference cannot contain an extra `/`, a path traversal, or a name outside letters, digits, `_`, and `-`. Personal files must be non-empty UTF-8 RTTTL expressions.
+
+RTTTL defaults must include exactly `d`, `o`, and `b`: duration is `1`, `2`, `4`, `8`, `16`, or `32`; octave is `4` through `7`; tempo is `25` through `900`. Notes use `a`–`g` or `p`, with `#` only on `a`, `c`, `d`, `f`, or `g`.
+
+| Request problem | Status and JSON error |
+| --- | --- |
+| non-string `melody` | `400 {"error":"invalid_melody","message":"melody must be a string","details":{}}` |
+| invalid, unreadable, empty, or malformed `melody` file | `400 {"error":"invalid_melody","message":"melody must be a valid library reference","details":{}}` |
+| `melody: "Default/Missing"` | `404 {"error":"melody_not_found","message":"Melody was not found","details":{"melody":"Default/Missing"}}` |
+| non-string `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a string","details":{}}` |
+| malformed `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a valid RTTTL expression","details":{}}` |
+| both non-empty `melody` and `rtttl` | `400 {"error":"invalid_melody","message":"melody and rtttl are mutually exclusive","details":{}}` |
+
+Every melody/RTTTL error creates no event and publishes no MQTT payload, so the same `event_id` can be retried safely with a corrected request.
+
+## Local development
+
+From this App source directory, run the local smoke suite with:
+
+```bash
+python3 scripts/smoke.py
+```

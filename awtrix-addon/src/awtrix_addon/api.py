@@ -10,6 +10,7 @@ from aiohttp import web
 from .auth import AuthManager, TokenManagedByOptions
 from .errors import ApiError, api_error_middleware, error_payload, json_error
 from .lifecycle import DuplicateEventId, EventSpec, EventStore
+from .melodies import MelodyError, MelodyLibrary, MelodyNotFound, validate_rtttl
 from .mqtt import Publisher
 from .renderer import load_asset, load_asset_bytes
 from .settings import Settings, StartupConfigError, invalid_prefix_details, settings_from_options, validate_request_prefixes
@@ -20,6 +21,7 @@ def make_app(
     auth: AuthManager,
     publisher: Publisher | None,
     *,
+    data_dir: Path = Path("/data"),
     startup_error: StartupConfigError | None = None,
     start_tasks: bool = True,
 ) -> web.Application:
@@ -29,6 +31,7 @@ def make_app(
     app["startup_error"] = startup_error
     if settings and publisher:
         app["store"] = EventStore(settings, publisher, start_tasks=start_tasks)
+        app["melody_library"] = MelodyLibrary(data_dir)
         app["publisher"] = publisher
 
     app.router.add_get("/health", health)
@@ -44,8 +47,8 @@ def app_from_options(raw: dict[str, Any], data_dir: Path, publisher: Publisher, 
         settings = settings_from_options(raw)
     except StartupConfigError as exc:
         option_token = raw.get("auth_token") if isinstance(raw.get("auth_token"), str) else None
-        return make_app(None, AuthManager(data_dir, option_token), None, startup_error=exc, start_tasks=start_tasks)
-    return make_app(settings, AuthManager(data_dir, settings.auth_token), publisher, start_tasks=start_tasks)
+        return make_app(None, AuthManager(data_dir, option_token), None, data_dir=data_dir, startup_error=exc, start_tasks=start_tasks)
+    return make_app(settings, AuthManager(data_dir, settings.auth_token), publisher, data_dir=data_dir, start_tasks=start_tasks)
 
 
 @web.middleware
@@ -100,14 +103,14 @@ async def create_event(request: web.Request) -> web.Response:
     if not isinstance(duration, int) or duration <= 0:
         raise ApiError(400, "bad_request", "duration_seconds must be a positive integer")
     asset = _request_asset(settings, body)
+    rtttl = _request_rtttl(body, request.app["melody_library"])
 
     spec = EventSpec(
         event_id=body.get("event_id") if isinstance(body.get("event_id"), str) else None,
         clock_prefixes=clock_prefixes,
         duration_seconds=duration,
         asset=asset,
-        sound=body.get("sound") if isinstance(body.get("sound"), str) else None,
-        rtttl=body.get("rtttl") if isinstance(body.get("rtttl"), str) else None,
+        rtttl=rtttl,
     )
     store: EventStore = request.app["store"]
     try:
@@ -115,6 +118,29 @@ async def create_event(request: web.Request) -> web.Response:
     except DuplicateEventId:
         raise ApiError(409, "duplicate_event_id", "event_id already exists")
     return web.json_response({"event_id": event_id, "clock_prefixes": list(clock_prefixes)}, status=201)
+
+
+def _request_rtttl(body: dict[str, Any], library: MelodyLibrary) -> str | None:
+    raw = body.get("rtttl")
+    melody = body.get("melody")
+    if raw is not None and not isinstance(raw, str):
+        raise ApiError(400, "invalid_rtttl", "rtttl must be a string")
+    if melody is not None and not isinstance(melody, str):
+        raise ApiError(400, "invalid_melody", "melody must be a string")
+    raw = raw or None
+    melody = melody or None
+    if raw and melody:
+        raise ApiError(400, "invalid_melody", "melody and rtttl are mutually exclusive")
+    try:
+        if melody:
+            return library.resolve(melody)
+        return validate_rtttl(raw) if raw else None
+    except MelodyNotFound:
+        raise ApiError(404, "melody_not_found", "Melody was not found", {"melody": melody}) from None
+    except MelodyError:
+        if melody:
+            raise ApiError(400, "invalid_melody", "melody must be a valid library reference") from None
+        raise ApiError(400, "invalid_rtttl", "rtttl must be a valid RTTTL expression") from None
 
 
 def _request_asset(settings: Settings, body: dict[str, Any]):

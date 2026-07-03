@@ -48,15 +48,15 @@ The service binds `0.0.0.0:8099` in the container and exposes host port `8099`.
 
 Use one of these URL forms from Home Assistant:
 
-- `http://homeassistant.local:8099/api/events`
+- `http://127.0.0.1:8099/api/events`
 - `http://<home_assistant_host_ip>:8099/api/events`
 
 When using secrets, store the full scalar value in `secrets.yaml`:
 
 ```yaml
-awtrix_addon_events_url: http://homeassistant.local:8099/api/events
-awtrix_addon_current_event_url: http://homeassistant.local:8099/api/events/current
-awtrix_addon_event_url: http://homeassistant.local:8099/api/events/{{ event_id }}
+awtrix_addon_events_url: http://127.0.0.1:8099/api/events
+awtrix_addon_current_event_url: http://127.0.0.1:8099/api/events/current
+awtrix_addon_event_url: http://127.0.0.1:8099/api/events/{{ event_id }}
 awtrix_addon_authorization: Bearer optional-fixed-token
 ```
 
@@ -69,7 +69,7 @@ If `auth_token` is omitted, the generated token is stored only in `/data/auth.js
 ```bash
 curl -X POST \
   -H "Authorization: Bearer <current-token>" \
-  http://homeassistant.local:8099/api/auth/regenerate
+  http://127.0.0.1:8099/api/auth/regenerate
 ```
 
 ## Home Assistant examples
@@ -89,7 +89,8 @@ rest_command:
         "duration_seconds": {{ duration_seconds | int(30) }},
         "asset": "{{ asset | default('') }}",
         "asset_base64": "{{ asset_base64 | default('') }}",
-        "sound": "{{ sound | default('') }}"
+        "melody": "{{ melody | default('') }}",
+        "rtttl": "{{ rtttl | default('') }}"
       }
 
   awtrix_cancel_current:
@@ -117,7 +118,7 @@ data:
     - awtrix
   duration_seconds: 20
   asset: doorbell.gif
-  sound: ding
+  melody: "Default/Arkanoid"
 ```
 
 ```yaml
@@ -168,12 +169,34 @@ Invalid request targets publish zero MQTT payloads, including zero restore clear
 The App only publishes to:
 
 - `<prefix>/custom/<app_name>`
-- `<prefix>/sound`
 - `<prefix>/rtttl`
 
 Restore is only an empty payload to `<prefix>/custom/<app_name>`. The App never publishes AWTRIX `settings`, brightness, palette, or forced `Clock` commands.
 
-Runtime events are in memory only. Refresh, restart, or version update does not resurrect old workflow state. Generated auth survives restart because `/data/auth.json` is the only persisted runtime file.
+## Melodies
+
+Use `melody` for a managed melody name, for example `Default/Arkanoid` or `Personal/My_chime`. Names are case-sensitive and always include the namespace. The bundled Default library is updated with the App; manually add Personal UTF-8 `.rtttl` files under `/data/library/melodies/Personal`, for example `/data/library/melodies/Personal/My_chime.rtttl`. Personal files survive App restarts and updates.
+
+Use `rtttl` for a one-off RTTTL expression such as `chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p`. Specify either `melody` or `rtttl`, not both. A missing library name returns `404 melody_not_found` before any event or MQTT publication. The resolved RTTTL text is published once to `<prefix>/rtttl` immediately after event creation; it is not replayed while the event is rendered, canceled, expired, or shut down.
+
+Runtime events are in memory only. Refresh, restart, or version update does not resurrect old workflow state. Generated auth and Personal melody files persist under `/data`.
+
+### Melody error contract
+
+`melody` is case-sensitive: only `Default/<name>` and `Personal/<name>` are valid references. An empty `melody` or `rtttl` means no melody. A reference cannot contain an extra `/`, a path traversal, or a name outside letters, digits, `_`, and `-`. Personal files must be non-empty UTF-8 RTTTL expressions.
+
+RTTTL defaults must include exactly `d`, `o`, and `b`: duration is `1`, `2`, `4`, `8`, `16`, or `32`; octave is `4` through `7`; tempo is `25` through `900`. Notes use `a`–`g` or `p`, with `#` only on `a`, `c`, `d`, `f`, or `g`.
+
+| Request problem | Status and JSON error |
+| --- | --- |
+| non-string `melody` | `400 {"error":"invalid_melody","message":"melody must be a string","details":{}}` |
+| invalid, unreadable, empty, or malformed `melody` file | `400 {"error":"invalid_melody","message":"melody must be a valid library reference","details":{}}` |
+| `melody: "Default/Missing"` | `404 {"error":"melody_not_found","message":"Melody was not found","details":{"melody":"Default/Missing"}}` |
+| non-string `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a string","details":{}}` |
+| malformed `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a valid RTTTL expression","details":{}}` |
+| both non-empty `melody` and `rtttl` | `400 {"error":"invalid_melody","message":"melody and rtttl are mutually exclusive","details":{}}` |
+
+Every melody/RTTTL error creates no event and publishes no MQTT payload, so the same `event_id` can be retried safely with a corrected request.
 
 ## Assets
 

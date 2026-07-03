@@ -35,7 +35,6 @@ class Event:
     created_at: datetime
     expires_at: datetime
     asset: AssetAnimation
-    sound: str | None = None
     rtttl: str | None = None
     frame_index: int = 0
     states: dict[str, str] = field(default_factory=dict)
@@ -47,7 +46,6 @@ class EventSpec:
     clock_prefixes: tuple[str, ...]
     duration_seconds: int
     asset: AssetAnimation
-    sound: str | None = None
     rtttl: str | None = None
 
 
@@ -81,35 +79,39 @@ class EventStore:
         async with self._lock:
             if spec.event_id and event_id in self._events:
                 raise DuplicateEventId(event_id)
-            bindings: dict[str, Binding] = {}
-            for prefix in spec.clock_prefixes:
-                old = self._current.get(prefix)
-                if old and old.event_id in self._events:
-                    self._events[old.event_id].states[prefix] = "stale"
-                self._generations[prefix] += 1
-                binding = Binding(event_id, self._generations[prefix])
-                self._current[prefix] = binding
-                bindings[prefix] = binding
-                if old:
-                    self._forget_event_if_unbound_locked(old.event_id)
-            event = Event(
-                event_id=event_id,
-                clock_prefixes=set(spec.clock_prefixes),
-                bindings=bindings,
-                created_at=created_at,
-                expires_at=datetime.fromtimestamp(expires_at, timezone.utc),
-                asset=spec.asset,
-                sound=spec.sound,
-                rtttl=spec.rtttl,
-                states={prefix: "active" for prefix in spec.clock_prefixes},
-            )
-            self._events[event_id] = event
-            await self._publish_frame_locked(event)
-            for prefix in spec.clock_prefixes:
-                if spec.sound:
-                    await self.publisher.publish(f"{prefix}/sound", spec.sound)
-                if spec.rtttl:
-                    await self.publisher.publish(f"{prefix}/rtttl", spec.rtttl)
+            snapshot = self._snapshot_locked()
+            previous_event_ids: set[str] = set()
+            try:
+                bindings: dict[str, Binding] = {}
+                for prefix in spec.clock_prefixes:
+                    old = self._current.get(prefix)
+                    if old and old.event_id in self._events:
+                        self._events[old.event_id].states[prefix] = "stale"
+                        previous_event_ids.add(old.event_id)
+                    self._generations[prefix] += 1
+                    binding = Binding(event_id, self._generations[prefix])
+                    self._current[prefix] = binding
+                    bindings[prefix] = binding
+                event = Event(
+                    event_id=event_id,
+                    clock_prefixes=set(spec.clock_prefixes),
+                    bindings=bindings,
+                    created_at=created_at,
+                    expires_at=datetime.fromtimestamp(expires_at, timezone.utc),
+                    asset=spec.asset,
+                    rtttl=spec.rtttl,
+                    states={prefix: "active" for prefix in spec.clock_prefixes},
+                )
+                self._events[event_id] = event
+                await self._publish_frame_locked(event)
+                for prefix in spec.clock_prefixes:
+                    if spec.rtttl:
+                        await self.publisher.publish(f"{prefix}/rtttl", spec.rtttl)
+            except Exception:
+                self._restore_locked(snapshot)
+                raise
+            for previous_event_id in previous_event_ids:
+                self._forget_event_if_unbound_locked(previous_event_id)
         if self._start_tasks:
             task = asyncio.create_task(self._run_event(event_id))
             self._tasks.add(task)
@@ -205,6 +207,34 @@ class EventStore:
         event = self._events.get(event_id)
         if event and not any(self._current.get(prefix) == binding for prefix, binding in event.bindings.items()):
             self._events.pop(event_id, None)
+
+    def _snapshot_locked(self) -> tuple[
+        dict[str, Binding], dict[str, int], dict[str, tuple[Event, dict[str, Binding], dict[str, str], int]]
+    ]:
+        return (
+            dict(self._current),
+            dict(self._generations),
+            {
+                event_id: (event, dict(event.bindings), dict(event.states), event.frame_index)
+                for event_id, event in self._events.items()
+            },
+        )
+
+    def _restore_locked(
+        self,
+        snapshot: tuple[
+            dict[str, Binding], dict[str, int], dict[str, tuple[Event, dict[str, Binding], dict[str, str], int]]
+        ],
+    ) -> None:
+        current, generations, events = snapshot
+        self._current = current
+        self._generations = defaultdict(int, generations)
+        self._events = {}
+        for event_id, (event, bindings, states, frame_index) in events.items():
+            event.bindings = bindings
+            event.states = states
+            event.frame_index = frame_index
+            self._events[event_id] = event
 
 
 def response_event(event_id: str, clock_prefixes: tuple[str, ...]) -> str:

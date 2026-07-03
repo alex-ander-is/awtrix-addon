@@ -18,6 +18,9 @@ awtrix-addon = "awtrix_addon.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+awtrix_addon = ["library/melodies/Default/*.rtttl"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
