@@ -20,7 +20,7 @@ from aiohttp.test_utils import make_mocked_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from awtrix_addon.api import app_from_options, cancel_current, create_event, health, regenerate_auth
+from awtrix_addon.api import app_from_options, cancel_current, create_event, health, make_app, regenerate_auth
 from awtrix_addon.api import cancel_event as cancel_event_handler
 from awtrix_addon.api import auth_middleware, startup_middleware
 from awtrix_addon import main as main_module
@@ -120,6 +120,20 @@ class FakePahoClient:
     def publish(self, topic, payload, qos, retain):
         self.published.append((topic, payload, qos, retain))
         return type("PublishResult", (), {"rc": 0})()
+
+
+class FakeRecoveringPublisher:
+    def __init__(self, *_args, **_kwargs):
+        self.started = False
+
+    async def start(self):
+        self.started = True
+
+    async def stop(self):
+        self.started = False
+
+    async def publish(self, _topic, _payload):
+        return None
 
 
 class FailOncePublisher(MemoryPublisher):
@@ -391,6 +405,37 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.published, [("bedroom-clock/custom/awtrix_addon", "payload", 0, False)])
         self.assertIsNone(publisher._username)
         self.assertIsNone(publisher._password)
+
+    async def test_startup_recovers_when_supervisor_mqtt_is_not_ready_yet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            settings = settings_from_options(base_options(data_dir))
+            app = make_app(
+                settings,
+                AuthManager(data_dir, settings.auth_token),
+                None,
+                data_dir=data_dir,
+                startup_error=StartupConfigError("mqtt_credentials_unavailable", "MQTT credentials are unavailable"),
+            )
+            attempts = [
+                StartupConfigError("mqtt_credentials_unavailable", "MQTT credentials are unavailable"),
+                ("core-mosquitto", 1883, "user", "password"),
+            ]
+            sleeps = []
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+
+            with (
+                patch.object(main_module, "load_mqtt_credentials", side_effect=attempts),
+                patch.object(main_module, "PahoPublisher", FakeRecoveringPublisher),
+            ):
+                await main_module._recover_mqtt_runtime(app, settings, data_dir, sleep=fake_sleep)
+
+            self.assertEqual(sleeps, [2])
+            self.assertIsNone(app["startup_error"])
+            self.assertIn("store", app)
+            self.assertTrue(app["publisher"].started)
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ from urllib.request import Request, urlopen
 
 from aiohttp import web
 
-from .api import make_app
+from .api import attach_runtime, make_app
 from .auth import AuthManager
 from .mqtt import PahoPublisher
 from .settings import Settings
@@ -63,33 +64,50 @@ def run(options_file: Path, data_dir: Path) -> None:
         return
 
     auth = AuthManager(data_dir, settings.auth_token)
-    try:
-        mqtt_host, mqtt_port, mqtt_username, mqtt_password = load_mqtt_credentials()
-    except StartupConfigError as exc:
-        app = make_app(None, auth, None, data_dir=data_dir, startup_error=exc)
-        web.run_app(app, host="0.0.0.0", port=8099)
-        return
-    publisher = PahoPublisher(
-        mqtt_host,
-        mqtt_port,
-        mqtt_username,
-        mqtt_password,
-        credentials_provider=load_mqtt_credentials,
-    )
-    del mqtt_username, mqtt_password
-    app = make_app(settings, auth, publisher, data_dir=data_dir)
+    unavailable = StartupConfigError("mqtt_credentials_unavailable", "MQTT credentials are unavailable")
+    app = make_app(settings, auth, None, data_dir=data_dir, startup_error=unavailable)
 
     async def on_startup(_app: web.Application) -> None:
-        await publisher.start()
+        _app["mqtt_recovery_task"] = asyncio.create_task(_recover_mqtt_runtime(_app, settings, data_dir))
 
     async def on_shutdown(_app: web.Application) -> None:
-        await _app["store"].shutdown()
+        task = _app.get("mqtt_recovery_task")
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        store = _app.get("store")
+        if store:
+            await store.shutdown()
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     for line in startup_log_lines(settings, auth):
         print(line)
     web.run_app(app, host="0.0.0.0", port=8099)
+
+
+async def _recover_mqtt_runtime(
+    app: web.Application,
+    settings: Settings,
+    data_dir: Path,
+    *,
+    sleep=asyncio.sleep,
+) -> None:
+    while True:
+        try:
+            host, port, username, password = await asyncio.to_thread(load_mqtt_credentials)
+            publisher = PahoPublisher(host, port, username, password, credentials_provider=load_mqtt_credentials)
+            del username, password
+            await publisher.start()
+        except StartupConfigError as exc:
+            app["startup_error"] = exc
+        except RuntimeError:
+            app["startup_error"] = StartupConfigError("mqtt_connection_unavailable", "MQTT connection is unavailable")
+        else:
+            attach_runtime(app, settings, publisher, data_dir=data_dir)
+            app["startup_error"] = None
+            return
+        await sleep(2)
 
 
 def startup_log_lines(settings: Settings, auth: AuthManager) -> list[str]:

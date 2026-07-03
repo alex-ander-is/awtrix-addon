@@ -30,9 +30,7 @@ def make_app(
     app["auth"] = auth
     app["startup_error"] = startup_error
     if settings and publisher:
-        app["store"] = EventStore(settings, publisher, start_tasks=start_tasks)
-        app["melody_library"] = MelodyLibrary(data_dir)
-        app["publisher"] = publisher
+        attach_runtime(app, settings, publisher, data_dir=data_dir, start_tasks=start_tasks)
 
     app.router.add_get("/health", health)
     app.router.add_post("/api/events", create_event)
@@ -40,6 +38,20 @@ def make_app(
     app.router.add_delete("/api/events/{event_id}", cancel_event)
     app.router.add_post("/api/auth/regenerate", regenerate_auth)
     return app
+
+
+def attach_runtime(
+    app: web.Application,
+    settings: Settings,
+    publisher: Publisher,
+    *,
+    data_dir: Path = Path("/data"),
+    start_tasks: bool = True,
+) -> None:
+    app["settings"] = settings
+    app["store"] = EventStore(settings, publisher, start_tasks=start_tasks)
+    app["melody_library"] = MelodyLibrary(data_dir)
+    app["publisher"] = publisher
 
 
 def app_from_options(raw: dict[str, Any], data_dir: Path, publisher: Publisher, *, start_tasks: bool = True) -> web.Application:

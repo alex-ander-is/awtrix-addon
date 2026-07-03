@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.10
+
+- Retry MQTT initialization after Supervisor services become available instead of remaining in a failed startup state.
+
 ## 0.1.9
 
 - Refresh Supervisor MQTT credentials and confirm a new connection before retrying after a broker disconnect.
