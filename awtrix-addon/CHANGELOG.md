@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.8
+
+- Use Supervisor-provided MQTT credentials, wait for an accepted CONNACK, and safely retry events after a failed publish.
+- Add managed Default and Personal RTTTL melody references alongside one-off RTTTL expressions.
+
 ## 0.1.7
 
 - Use Home Assistant's current Apps terminology in displayed names, documentation, and runtime messages.
