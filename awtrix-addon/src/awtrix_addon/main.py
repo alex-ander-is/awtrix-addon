@@ -69,7 +69,13 @@ def run(options_file: Path, data_dir: Path) -> None:
         app = make_app(None, auth, None, data_dir=data_dir, startup_error=exc)
         web.run_app(app, host="0.0.0.0", port=8099)
         return
-    publisher = PahoPublisher(mqtt_host, mqtt_port, mqtt_username, mqtt_password)
+    publisher = PahoPublisher(
+        mqtt_host,
+        mqtt_port,
+        mqtt_username,
+        mqtt_password,
+        credentials_provider=load_mqtt_credentials,
+    )
     del mqtt_username, mqtt_password
     app = make_app(settings, auth, publisher, data_dir=data_dir)
 

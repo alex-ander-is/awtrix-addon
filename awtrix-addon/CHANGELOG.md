@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.9
+
+- Refresh Supervisor MQTT credentials and confirm a new connection before retrying after a broker disconnect.
+- Document the AWTRIX App's internal Home Assistant DNS URL instead of Core loopback URLs.
+
 ## 0.1.8
 
 - Use Supervisor-provided MQTT credentials, wait for an accepted CONNACK, and safely retry events after a failed publish.

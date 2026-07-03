@@ -6,6 +6,9 @@ from threading import Event
 from typing import Any, Callable, Protocol
 
 
+CredentialsProvider = Callable[[], tuple[str, int, str, str]]
+
+
 class Publisher(Protocol):
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
@@ -35,6 +38,7 @@ class PahoPublisher:
         username: str,
         password: str,
         *,
+        credentials_provider: CredentialsProvider | None = None,
         client_factory: Callable[[], Any] | None = None,
         connect_timeout: float = 10,
     ):
@@ -42,6 +46,7 @@ class PahoPublisher:
         self.port = port
         self._username = username
         self._password = password
+        self._credentials_provider = credentials_provider
         self._client_factory = client_factory
         self._connect_timeout = connect_timeout
         self._client = None
@@ -109,11 +114,29 @@ class PahoPublisher:
         await asyncio.to_thread(client.disconnect)
 
     async def publish(self, topic: str, payload: str | bytes) -> None:
-        if self._client is None:
+        if self._client is None or not await asyncio.to_thread(self._client.is_connected):
+            await asyncio.to_thread(self._refresh_connection)
+        client = self._client
+        if client is None:
             raise RuntimeError("MQTT publisher is not started")
-        result = await asyncio.to_thread(self._client.publish, topic, payload, qos=0, retain=False)
+        result = await asyncio.to_thread(client.publish, topic, payload, qos=0, retain=False)
         if result.rc != 0:
+            await asyncio.to_thread(self._discard_client)
             raise RuntimeError(f"MQTT publish failed with rc={result.rc}")
+
+    def _refresh_connection(self) -> None:
+        self._discard_client()
+        if self._credentials_provider is None:
+            raise RuntimeError("MQTT publisher is not started")
+        self.host, self.port, self._username, self._password = self._credentials_provider()
+        self._connect()
+
+    def _discard_client(self) -> None:
+        if self._client is None:
+            return
+        client = self._client
+        self._client = None
+        self._cleanup_unready_client(client)
 
 
 def _is_accepted_connack(reason_code: Any) -> bool:

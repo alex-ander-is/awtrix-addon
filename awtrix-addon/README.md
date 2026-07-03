@@ -23,12 +23,9 @@ Leave `auth_token` empty to let the App generate one. After start, copy this lin
 awtrix_addon_authorization: Bearer <generated-token>
 ```
 
-Also add these URLs to `secrets.yaml`:
-
-```yaml
-awtrix_addon_events_url: http://127.0.0.1:8099/api/events
-awtrix_addon_current_event_url: http://127.0.0.1:8099/api/events/current
-```
+The App is reachable from Home Assistant Core at
+`http://35664e22-awtrix-addon:8099`. The URL is not sensitive; keep only the
+authorization value in `secrets.yaml`.
 
 ## Home Assistant REST Commands
 
@@ -37,7 +34,7 @@ Add this to Home Assistant configuration:
 ```yaml
 rest_command:
   awtrix_event:
-    url: !secret awtrix_addon_events_url
+    url: http://35664e22-awtrix-addon:8099/api/events
     method: POST
     headers:
       Authorization: !secret awtrix_addon_authorization
@@ -54,7 +51,7 @@ rest_command:
       }
 
   awtrix_cancel_current:
-    url: !secret awtrix_addon_current_event_url
+    url: http://35664e22-awtrix-addon:8099/api/events/current
     method: DELETE
     headers:
       Authorization: !secret awtrix_addon_authorization

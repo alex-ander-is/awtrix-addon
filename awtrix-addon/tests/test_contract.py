@@ -89,6 +89,8 @@ class FakePahoClient:
         self.calls: list[str] = []
         self.username_password = None
         self.on_connect = None
+        self.connected = False
+        self.published: list[tuple[str, str | bytes, int, bool]] = []
 
     def username_pw_set(self, username, password):
         self.calls.append("username_pw_set")
@@ -103,12 +105,21 @@ class FakePahoClient:
         self.calls.append("loop_start")
         if self.connack is not None:
             self.on_connect(self, None, None, self.connack)
+            self.connected = self.connack == 0
 
     def loop_stop(self):
         self.calls.append("loop_stop")
 
     def disconnect(self):
         self.calls.append("disconnect")
+        self.connected = False
+
+    def is_connected(self):
+        return self.connected
+
+    def publish(self, topic, payload, qos, retain):
+        self.published.append((topic, payload, qos, retain))
+        return type("PublishResult", (), {"rc": 0})()
 
 
 class FailOncePublisher(MemoryPublisher):
@@ -348,6 +359,38 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(client.calls[-2:], ["loop_stop", "disconnect"])
                 self.assertIsNone(publisher._username)
                 self.assertIsNone(publisher._password)
+
+    async def test_stale_mqtt_session_refreshes_supervisor_credentials_before_retry(self):
+        first = FakePahoClient(connack=0)
+        refreshed = FakePahoClient(connack=0)
+        clients = iter((first, refreshed))
+        provider_calls = []
+
+        def provide_credentials():
+            provider_calls.append(True)
+            return ("refreshed-broker", 1884, "refreshed-user", "refreshed-password")
+
+        publisher = PahoPublisher(
+            "initial-broker",
+            1883,
+            "initial-user",
+            "initial-password",
+            credentials_provider=provide_credentials,
+            client_factory=lambda: next(clients),
+            connect_timeout=0.01,
+        )
+        await publisher.start()
+        first.connected = False
+
+        await publisher.publish("bedroom-clock/custom/awtrix_addon", "payload")
+
+        self.assertEqual(provider_calls, [True])
+        self.assertEqual(first.calls[-2:], ["loop_stop", "disconnect"])
+        self.assertEqual(refreshed.address, ("refreshed-broker", 1884, 30))
+        self.assertEqual(refreshed.username_password, ("refreshed-user", "refreshed-password"))
+        self.assertEqual(refreshed.published, [("bedroom-clock/custom/awtrix_addon", "payload", 0, False)])
+        self.assertIsNone(publisher._username)
+        self.assertIsNone(publisher._password)
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
@@ -1141,10 +1184,11 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("pytest tests", repository_readme)
         self.assertNotIn("pytest tests", addon_readme)
 
-    def test_readmes_use_verified_loopback_service_url(self):
+    def test_readmes_use_app_dns_service_url_from_home_assistant(self):
         for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
             text = path.read_text(encoding="utf-8")
-            self.assertIn("http://127.0.0.1:8099", text)
+            self.assertIn("http://35664e22-awtrix-addon:8099", text)
+            self.assertNotIn("http://127.0.0.1:8099", text)
             self.assertNotIn("homeassistant.local:8099", text)
 
     def test_app_info_readme_documents_asset_resolution(self):

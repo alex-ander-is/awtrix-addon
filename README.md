@@ -46,17 +46,14 @@ The service binds `0.0.0.0:8099` in the container and exposes host port `8099`.
 - Every `/api/*` route requires `Authorization: Bearer <token>`.
 - No ingress is used. Home Assistant `rest_command` needs a stable service URL and bearer contract, not a browser ingress session.
 
-Use one of these URL forms from Home Assistant:
+From Home Assistant Core, use the App's internal DNS name:
 
-- `http://127.0.0.1:8099/api/events`
-- `http://<home_assistant_host_ip>:8099/api/events`
+`http://35664e22-awtrix-addon:8099/api/events`
 
-When using secrets, store the full scalar value in `secrets.yaml`:
+`127.0.0.1:8099` is the Core container itself, not this App. The URL is not
+sensitive; store only the bearer authorization value in `secrets.yaml`:
 
 ```yaml
-awtrix_addon_events_url: http://127.0.0.1:8099/api/events
-awtrix_addon_current_event_url: http://127.0.0.1:8099/api/events/current
-awtrix_addon_event_url: http://127.0.0.1:8099/api/events/{{ event_id }}
 awtrix_addon_authorization: Bearer optional-fixed-token
 ```
 
@@ -69,7 +66,7 @@ If `auth_token` is omitted, the generated token is stored only in `/data/auth.js
 ```bash
 curl -X POST \
   -H "Authorization: Bearer <current-token>" \
-  http://127.0.0.1:8099/api/auth/regenerate
+  http://35664e22-awtrix-addon:8099/api/auth/regenerate
 ```
 
 ## Home Assistant examples
@@ -77,7 +74,7 @@ curl -X POST \
 ```yaml
 rest_command:
   awtrix_event:
-    url: !secret awtrix_addon_events_url
+    url: http://35664e22-awtrix-addon:8099/api/events
     method: POST
     headers:
       Authorization: !secret awtrix_addon_authorization
@@ -94,7 +91,7 @@ rest_command:
       }
 
   awtrix_cancel_current:
-    url: !secret awtrix_addon_current_event_url
+    url: http://35664e22-awtrix-addon:8099/api/events/current
     method: DELETE
     headers:
       Authorization: !secret awtrix_addon_authorization
@@ -103,7 +100,7 @@ rest_command:
       {"clock_prefixes": {{ clock_prefixes | default([]) | to_json }}}
 
   awtrix_delete_event:
-    url: !secret awtrix_addon_event_url
+    url: http://35664e22-awtrix-addon:8099/api/events/{{ event_id }}
     method: DELETE
     headers:
       Authorization: !secret awtrix_addon_authorization
