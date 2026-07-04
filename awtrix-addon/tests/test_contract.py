@@ -330,16 +330,19 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
             def capture_run_app(app, **_kwargs):
                 captured["app"] = app
 
+            async def failed_recovery(*_args, **_kwargs):
+                raise StartupConfigError("mqtt_credentials_invalid", "MQTT credentials are invalid")
+
             with (
                 patch.dict(os.environ, {"SUPERVISOR_TOKEN": supervisor_token}, clear=True),
-                patch.object(main_module, "urlopen", side_effect=OSError(mqtt_password)),
+                patch.object(main_module, "_recover_mqtt_runtime", side_effect=failed_recovery),
                 patch.object(main_module.web, "run_app", side_effect=capture_run_app),
             ):
                 main_module.run(options_file, root / "data")
 
             app = captured["app"]
             error = app["startup_error"]
-            self.assertEqual(error.code, "mqtt_credentials_unavailable")
+            self.assertEqual(error.code, "mqtt_credentials_invalid")
             self.assertNotIn(supervisor_token, str(error))
             self.assertNotIn(mqtt_password, json.dumps(error.redacted()))
             self.assertNotIn("publisher", app)
@@ -436,6 +439,27 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app["startup_error"])
             self.assertIn("store", app)
             self.assertTrue(app["publisher"].started)
+
+    async def test_invalid_supervisor_credentials_stop_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            settings = settings_from_options(base_options(data_dir))
+            app = make_app(
+                settings,
+                AuthManager(data_dir, settings.auth_token),
+                None,
+                data_dir=data_dir,
+                startup_error=StartupConfigError("mqtt_credentials_unavailable", "MQTT credentials are unavailable"),
+            )
+            with patch.object(
+                main_module,
+                "load_mqtt_credentials",
+                side_effect=StartupConfigError("mqtt_credentials_invalid", "MQTT credentials are invalid"),
+            ):
+                with self.assertRaisesRegex(StartupConfigError, "invalid"):
+                    await main_module._recover_mqtt_runtime(app, settings, data_dir)
+
+            self.assertEqual(app["startup_error"].code, "mqtt_credentials_invalid")
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):

@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.11
+
+- Complete App startup only after MQTT recovery succeeds, avoiding an inactive background recovery task.
+
 ## 0.1.10
 
 - Retry MQTT initialization after Supervisor services become available instead of remaining in a failed startup state.

@@ -67,19 +67,16 @@ def run(options_file: Path, data_dir: Path) -> None:
     unavailable = StartupConfigError("mqtt_credentials_unavailable", "MQTT credentials are unavailable")
     app = make_app(settings, auth, None, data_dir=data_dir, startup_error=unavailable)
 
-    async def on_startup(_app: web.Application) -> None:
-        _app["mqtt_recovery_task"] = asyncio.create_task(_recover_mqtt_runtime(_app, settings, data_dir))
+    try:
+        asyncio.run(_recover_mqtt_runtime(app, settings, data_dir))
+    except StartupConfigError as exc:
+        app["startup_error"] = exc
 
     async def on_shutdown(_app: web.Application) -> None:
-        task = _app.get("mqtt_recovery_task")
-        if task:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
         store = _app.get("store")
         if store:
             await store.shutdown()
 
-    app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     for line in startup_log_lines(settings, auth):
         print(line)
@@ -101,6 +98,8 @@ async def _recover_mqtt_runtime(
             await publisher.start()
         except StartupConfigError as exc:
             app["startup_error"] = exc
+            if exc.code != "mqtt_credentials_unavailable":
+                raise
         except RuntimeError:
             app["startup_error"] = StartupConfigError("mqtt_connection_unavailable", "MQTT connection is unavailable")
         else:
