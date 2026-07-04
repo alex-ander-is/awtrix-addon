@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.13
+
+- Start through Home Assistant's documented `with-contenv` Bashio runner so the App process receives the s6 container environment.
+
 ## 0.1.12
 
 - Load the s6 container environment before starting the App so `SUPERVISOR_TOKEN` reaches its MQTT startup process.

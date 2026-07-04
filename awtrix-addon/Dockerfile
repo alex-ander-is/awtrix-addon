@@ -5,8 +5,10 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
+COPY run.sh /run.sh
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . \
+    && chmod a+x /run.sh
 
 EXPOSE 8099
-CMD ["/usr/bin/with-contenv", "awtrix-addon"]
+CMD ["/run.sh"]
