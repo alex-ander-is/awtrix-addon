@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.12
+
+- Load the s6 container environment before starting the App so `SUPERVISOR_TOKEN` reaches its MQTT startup process.
+
 ## 0.1.11
 
 - Complete App startup only after MQTT recovery succeeds, avoiding an inactive background recovery task.

@@ -9,4 +9,4 @@ COPY src ./src
 RUN pip install --no-cache-dir .
 
 EXPOSE 8099
-CMD ["awtrix-addon"]
+CMD ["/usr/bin/with-contenv", "awtrix-addon"]
