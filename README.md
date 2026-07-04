@@ -1,6 +1,6 @@
 # AWTRIX App
 
-Home Assistant App service that publishes short AWTRIX custom-app overlays without changing AWTRIX settings, brightness, palettes, or the forced Clock app.
+Home Assistant App service that publishes and immediately shows short AWTRIX custom-app overlays without changing AWTRIX settings, brightness, palettes, or the forced Clock app.
 
 ## Install in Home Assistant
 
@@ -166,9 +166,13 @@ request are cleared.
 The App only publishes to:
 
 - `<prefix>/custom/<app_name>`
+- `<prefix>/switch` with `{"name":"<app_name>","fast":true}` once for each new event
 - `<prefix>/rtttl`
 
-Restore is only an empty payload to `<prefix>/custom/<app_name>`. The App never publishes AWTRIX `settings`, brightness, palette, or forced `Clock` commands.
+The switch makes the new custom page visible immediately. Restore is only an
+empty payload to `<prefix>/custom/<app_name>`, which removes that page and
+returns control to AWTRIX's normal app loop. The App never publishes AWTRIX
+`settings`, brightness, palette, or a forced `Clock` command.
 
 ## Melodies
 

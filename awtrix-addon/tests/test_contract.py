@@ -670,7 +670,12 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status, 201)
-        payload = json.loads(self.publisher.published[-1][1])
+        custom_payload = next(
+            payload
+            for topic, payload in self.publisher.published
+            if topic == "clock/kitchen/custom/awtrix_addon"
+        )
+        payload = json.loads(custom_payload)
         bitmap = payload["draw"][0]["db"][4]
         for y in range(8):
             self.assertEqual(bitmap[y * 32 : y * 32 + 10], [0xFF0000] * 10)
@@ -975,6 +980,30 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.publisher.published, [])
 
+    async def test_new_event_switches_to_its_custom_app_once_then_cleanup_only_clears_it(self):
+        store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
+
+        await store.create(self.spec("evt", ["clock/a"]))
+
+        self.assertEqual(self.publisher.published[0][0], "clock/a/custom/awtrix_addon")
+        self.assertEqual(
+            self.publisher.published[1],
+            ("clock/a/switch", '{"name":"awtrix_addon","fast":true}'),
+        )
+        await store.render_once("evt")
+        self.assertEqual(
+            [item for item in self.publisher.published if item[0] == "clock/a/switch"],
+            [("clock/a/switch", '{"name":"awtrix_addon","fast":true}')],
+        )
+
+        await store.cancel_event("evt")
+
+        self.assertEqual(self.publisher.published[-1], ("clock/a/custom/awtrix_addon", ""))
+        self.assertEqual(
+            [item for item in self.publisher.published if item[0] == "clock/a/switch"],
+            [("clock/a/switch", '{"name":"awtrix_addon","fast":true}')],
+        )
+
     async def test_expiry_allows_reusing_stable_event_id(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
         await store.create(self.spec("doorbell", ["clock/a"]))
@@ -1025,6 +1054,10 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
     async def test_second_frame_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
         spec = self.spec("new-frame", ["clock/a", "clock/b"])
         await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/custom/awtrix_addon")
+
+    async def test_second_switch_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
+        spec = self.spec("new-switch", ["clock/a", "clock/b"])
+        await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/switch")
 
     async def test_second_rtttl_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
         spec = EventSpec(
@@ -1277,6 +1310,13 @@ class MetadataTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("event_id` is a replace key", text)
             self.assertNotIn("duplicate_event_id", text)
+
+    def test_readmes_document_immediate_custom_app_switch_and_cleanup(self):
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("`<prefix>/switch`", text)
+            self.assertIn('`{"name":"<app_name>","fast":true}`', text)
+            self.assertIn("forced `Clock` command", text)
 
     def test_app_info_readme_documents_asset_resolution(self):
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")

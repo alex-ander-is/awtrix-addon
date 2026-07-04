@@ -108,6 +108,7 @@ class EventStore:
                 )
                 self._events[event_id] = event
                 await self._publish_frame_locked(event)
+                await self._switch_to_event_locked(event)
                 for prefix in spec.clock_prefixes:
                     if spec.rtttl:
                         await self.publisher.publish(f"{prefix}/rtttl", spec.rtttl)
@@ -204,6 +205,13 @@ class EventStore:
         for prefix, binding in event.bindings.items():
             if self._current.get(prefix) == binding:
                 await self.publisher.publish(f"{prefix}/custom/{self.settings.app_name}", payload)
+
+    async def _switch_to_event_locked(self, event: Event) -> None:
+        """Make the just-created custom page visible without changing AWTRIX settings."""
+        payload = json.dumps({"name": self.settings.app_name, "fast": True}, separators=(",", ":"))
+        for prefix, binding in event.bindings.items():
+            if self._current.get(prefix) == binding:
+                await self.publisher.publish(f"{prefix}/switch", payload)
 
     def snapshot(self) -> dict[str, dict[str, str | int]]:
         return {prefix: {"event_id": binding.event_id, "generation": binding.generation} for prefix, binding in self._current.items()}

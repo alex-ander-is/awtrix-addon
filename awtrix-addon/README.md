@@ -1,8 +1,11 @@
 # AWTRIX App
 
-This App lets Home Assistant show a temporary custom picture on AWTRIX, then clears only that custom app when the event ends.
+This App lets Home Assistant show a temporary custom picture on AWTRIX immediately, then clears only that custom app when the event ends.
 
-It does not change AWTRIX brightness, palette, settings, or force the Clock app.
+It switches to its own custom app with `<prefix>/switch` and
+`{"name":"<app_name>","fast":true}`. It does not change AWTRIX brightness,
+palette, settings, or publish a forced `Clock` command. Removing the custom app
+at event end returns control to AWTRIX's normal app loop.
 
 ## Basic Configuration
 

@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.15
+
+- Switch each new event to its AWTRIX custom app so the picture is visible immediately, while cleanup still removes only that custom app.
+
 ## 0.1.14
 
 - Treat an active `event_id` as a replace key: a new request with the same ID supersedes its current overlay instead of returning `409`.
