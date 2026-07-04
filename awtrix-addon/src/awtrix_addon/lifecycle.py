@@ -17,10 +17,6 @@ Clock = Callable[[], datetime]
 Sleeper = Callable[[float], Awaitable[None]]
 
 
-class DuplicateEventId(ValueError):
-    pass
-
-
 @dataclass(frozen=True)
 class Binding:
     event_id: str
@@ -77,11 +73,19 @@ class EventStore:
         created_at = self.now()
         expires_at = created_at.timestamp() + spec.duration_seconds
         async with self._lock:
-            if spec.event_id and event_id in self._events:
-                raise DuplicateEventId(event_id)
             snapshot = self._snapshot_locked()
             previous_event_ids: set[str] = set()
             try:
+                replaced = self._events.pop(event_id, None) if spec.event_id else None
+                if replaced:
+                    for prefix, binding in replaced.bindings.items():
+                        if self._current.get(prefix) != binding:
+                            continue
+                        replaced.states[prefix] = "superseded"
+                        self._generations[prefix] += 1
+                        if prefix not in spec.clock_prefixes:
+                            await self.publisher.publish(f"{prefix}/custom/{self.settings.app_name}", "")
+                            self._current.pop(prefix)
                 bindings: dict[str, Binding] = {}
                 for prefix in spec.clock_prefixes:
                     old = self._current.get(prefix)
@@ -113,7 +117,7 @@ class EventStore:
             for previous_event_id in previous_event_ids:
                 self._forget_event_if_unbound_locked(previous_event_id)
         if self._start_tasks:
-            task = asyncio.create_task(self._run_event(event_id))
+            task = asyncio.create_task(self._run_event(event))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         return event_id
@@ -160,14 +164,15 @@ class EventStore:
         await self._restore_snapshot(snapshot, final_state="restored")
         await self.publisher.stop()
 
-    async def _run_event(self, event_id: str) -> None:
+    async def _run_event(self, event: Event) -> None:
         try:
             while True:
                 await self.sleep(1)
                 await self.expire_due()
                 async with self._lock:
-                    event = self._events.get(event_id)
-                    if not event or not any(self._current.get(p) == b for p, b in event.bindings.items()):
+                    if self._events.get(event.event_id) is not event:
+                        return
+                    if not any(self._current.get(p) == b for p, b in event.bindings.items()):
                         return
                     await self._publish_frame_locked(event)
         except asyncio.CancelledError:

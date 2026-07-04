@@ -86,6 +86,10 @@ data:
     - bedroom-clock
 ```
 
+An `event_id` is a replace key, not a uniqueness constraint. Sending the same
+ID again replaces its active event immediately; clocks omitted from the new
+request are cleared.
+
 ## Assets
 
 Put PNG or GIF files in:

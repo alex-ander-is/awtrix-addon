@@ -152,14 +152,14 @@ All API errors are JSON:
 ```
 
 ```json
-{"error":"duplicate_event_id","message":"event_id already exists","details":{}}
-```
-
-```json
 {"error":"startup_config_failed","message":"Startup configuration failed","details":{"config_error":{"code":"invalid_app_name","details":{}}}}
 ```
 
 Invalid request targets publish zero MQTT payloads, including zero restore clears.
+
+An `event_id` is a replace key, not a uniqueness constraint. A new request with
+the same ID replaces the active event immediately; clocks omitted from the new
+request are cleared.
 
 ## MQTT behavior
 

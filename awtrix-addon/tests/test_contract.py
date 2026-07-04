@@ -26,7 +26,7 @@ from awtrix_addon.api import auth_middleware, startup_middleware
 from awtrix_addon import main as main_module
 from awtrix_addon.auth import AuthManager, TokenManagedByOptions
 from awtrix_addon.errors import api_error_middleware
-from awtrix_addon.lifecycle import DuplicateEventId, EventSpec, EventStore
+from awtrix_addon.lifecycle import EventSpec, EventStore
 from awtrix_addon.mqtt import MemoryPublisher, PahoPublisher
 from awtrix_addon.renderer import AssetAnimation, blank_asset, load_asset, load_asset_bytes, render_frame
 from awtrix_addon.settings import StartupConfigError, settings_from_options
@@ -954,19 +954,26 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored_new, ["clock/a"])
         self.assertEqual(self.publisher.published.count(("clock/a/custom/awtrix_addon", "")), 1)
 
-    async def test_duplicate_event_id_is_rejected_before_publishing(self):
-        store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
-        await store.create(self.spec("same", ["clock/a"]))
-        before = list(self.publisher.published)
+    async def test_active_event_id_replaces_its_existing_overlay(self):
+        async def no_sleep(_seconds):
+            return None
 
-        with self.assertRaises(DuplicateEventId):
-            await store.create(self.spec("same", ["clock/b"]))
+        store = EventStore(self.settings, self.publisher, now=self.now, sleep=no_sleep, start_tasks=False)
+        await store.create(self.spec("same", ["clock/a", "clock/b"]))
+        previous = store._events["same"]
+        self.publisher.published.clear()
 
-        self.assertEqual(self.publisher.published, before)
-        self.assertEqual(store.snapshot(), {"clock/a": {"event_id": "same", "generation": 1}})
-        restored = await store.cancel_event("same")
-        self.assertEqual(restored, ["clock/a"])
-        self.assertEqual(self.publisher.published.count(("clock/a/custom/awtrix_addon", "")), 1)
+        replaced = await store.create(self.spec("same", ["clock/b"]))
+
+        self.assertEqual(replaced, "same")
+        self.assertEqual(store.snapshot(), {"clock/b": {"event_id": "same", "generation": 3}})
+        self.assertIn(("clock/a/custom/awtrix_addon", ""), self.publisher.published)
+        self.assertTrue(any(topic == "clock/b/custom/awtrix_addon" for topic, _payload in self.publisher.published))
+        self.publisher.published.clear()
+
+        await store._run_event(previous)
+
+        self.assertEqual(self.publisher.published, [])
 
     async def test_expiry_allows_reusing_stable_event_id(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
@@ -1264,6 +1271,12 @@ class MetadataTests(unittest.TestCase):
             self.assertIn("http://35664e22-awtrix-addon:8099", text)
             self.assertNotIn("http://127.0.0.1:8099", text)
             self.assertNotIn("homeassistant.local:8099", text)
+
+    def test_readmes_document_event_id_replacement(self):
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("event_id` is a replace key", text)
+            self.assertNotIn("duplicate_event_id", text)
 
     def test_app_info_readme_documents_asset_resolution(self):
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")

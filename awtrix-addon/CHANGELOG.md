@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.14
+
+- Treat an active `event_id` as a replace key: a new request with the same ID supersedes its current overlay instead of returning `409`.
+
 ## 0.1.13
 
 - Start through Home Assistant's documented `with-contenv` Bashio runner so the App process receives the s6 container environment.

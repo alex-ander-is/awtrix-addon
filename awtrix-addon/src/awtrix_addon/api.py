@@ -9,7 +9,7 @@ from aiohttp import web
 
 from .auth import AuthManager, TokenManagedByOptions
 from .errors import ApiError, api_error_middleware, error_payload, json_error
-from .lifecycle import DuplicateEventId, EventSpec, EventStore
+from .lifecycle import EventSpec, EventStore
 from .melodies import MelodyError, MelodyLibrary, MelodyNotFound, validate_rtttl
 from .mqtt import Publisher
 from .renderer import load_asset, load_asset_bytes
@@ -125,10 +125,7 @@ async def create_event(request: web.Request) -> web.Response:
         rtttl=rtttl,
     )
     store: EventStore = request.app["store"]
-    try:
-        event_id = await store.create(spec)
-    except DuplicateEventId:
-        raise ApiError(409, "duplicate_event_id", "event_id already exists")
+    event_id = await store.create(spec)
     return web.json_response({"event_id": event_id, "clock_prefixes": list(clock_prefixes)}, status=201)
 
 
