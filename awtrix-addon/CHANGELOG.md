@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.17
+
+- Align the rendered asset, clock, and weekday bar to the AWTRIX 32x8 layout contract.
+- Make same-`event_id` duration refreshes reset their scheduled expiry without stale tasks clearing the replacement event.
+
 ## 0.1.16
 
 - Add strict `weekdays` event control for showing or suppressing the weekday bar.

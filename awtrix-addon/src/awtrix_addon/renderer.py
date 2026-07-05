@@ -14,11 +14,19 @@ from .palette import DEFAULT_PALETTE, PaletteSnapshot
 WIDTH = 32
 HEIGHT = 8
 ASSET_WIDTH = 10
+ASSET_X = 1
+ASSET_Y = 0
 CLOCK_WIDTH = 22
-CLOCK_X = 12
-CLOCK_Y = 2
+HOUR_TENS_X = 12
+HOUR_ONES_X = 16
+COLON_X = 21
+MINUTE_TENS_X = 23
+MINUTE_ONES_X = 27
+CLOCK_X = HOUR_TENS_X
+CLOCK_Y = 1
 WEEKBAR_X = 11
 WEEKBAR_Y = 7
+WEEKBAR_BAR_WIDTH = 2
 
 
 DIGITS: dict[str, tuple[str, ...]] = {
@@ -76,7 +84,7 @@ def render_frame(
     palette: PaletteSnapshot = DEFAULT_PALETTE,
 ) -> Image.Image:
     canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    canvas.paste(_normalize_frame(asset), (0, 0))
+    canvas.paste(_normalize_frame(asset), (ASSET_X, ASSET_Y))
     _draw_clock(canvas, now, palette.time_color)
     if weekdays:
         _draw_weekbar(canvas, now, palette)
@@ -116,27 +124,28 @@ def _load_animation(image: Image.Image) -> AssetAnimation:
 
 
 def _draw_clock(canvas: Image.Image, now: datetime, color: tuple[int, int, int]) -> None:
-    text = now.strftime("%H:%M")
     colon_on = now.second % 2 == 0
-    x = CLOCK_X
     y = CLOCK_Y
-    for ch in text:
-        if ch == ":":
-            if colon_on:
-                canvas.putpixel((x, y + 1), color)
-                canvas.putpixel((x, y + 3), color)
-            x += 2
-            continue
-        glyph = DIGITS[ch]
-        for row, bits in enumerate(glyph):
-            for col, bit in enumerate(bits):
-                if bit == "1":
-                    canvas.putpixel((x + col, y + row), color)
-        x += 4
+    text = now.strftime("%H%M")
+    for ch, x in zip(text, (HOUR_TENS_X, HOUR_ONES_X, MINUTE_TENS_X, MINUTE_ONES_X)):
+        _draw_digit(canvas, ch, x, y, color)
+    if colon_on:
+        canvas.putpixel((COLON_X, y + 1), color)
+        canvas.putpixel((COLON_X, y + 3), color)
+
+
+def _draw_digit(canvas: Image.Image, ch: str, x: int, y: int, color: tuple[int, int, int]) -> None:
+    glyph = DIGITS[ch]
+    for row, bits in enumerate(glyph):
+        for col, bit in enumerate(bits):
+            if bit == "1":
+                canvas.putpixel((x + col, y + row), color)
 
 
 def _draw_weekbar(canvas: Image.Image, now: datetime, palette: PaletteSnapshot) -> None:
     active = now.date().weekday()
     for index in range(7):
         color = palette.weekday_active_color if index == active else palette.weekday_inactive_color
-        canvas.putpixel((WEEKBAR_X + index, WEEKBAR_Y), color)
+        x = WEEKBAR_X + index * WEEKBAR_BAR_WIDTH
+        for offset in range(WEEKBAR_BAR_WIDTH):
+            canvas.putpixel((x + offset, WEEKBAR_Y), color)

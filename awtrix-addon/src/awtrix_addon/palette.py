@@ -17,7 +17,7 @@ VERSION = 1
 @dataclass(frozen=True)
 class PaletteSnapshot:
     time_color: RGB = (255, 255, 255)
-    weekday_active_color: RGB = (255, 255, 255)
+    weekday_active_color: RGB = (255, 0, 0)
     weekday_inactive_color: RGB = (102, 102, 102)
     calendar_header_color: RGB = (255, 0, 0)
     calendar_body_color: RGB = (255, 255, 255)

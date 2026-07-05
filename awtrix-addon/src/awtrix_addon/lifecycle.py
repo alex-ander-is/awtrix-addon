@@ -175,13 +175,23 @@ class EventStore:
         try:
             while True:
                 await self.sleep(1)
-                await self.expire_due()
                 async with self._lock:
                     if self._events.get(event.event_id) is not event:
                         return
                     if not any(self._current.get(p) == b for p, b in event.bindings.items()):
                         return
-                    await self._publish_frame_locked(event)
+                    if event.expires_at <= self._now_utc():
+                        snapshot = [
+                            (prefix, binding)
+                            for prefix, binding in event.bindings.items()
+                            if self._current.get(prefix) == binding
+                        ]
+                    else:
+                        snapshot = []
+                        await self._publish_frame_locked(event)
+                if snapshot:
+                    await self._restore_snapshot(snapshot, final_state="expired")
+                    return
         except asyncio.CancelledError:
             return
 

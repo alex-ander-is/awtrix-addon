@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from awtrix_addon.live_payload_helpers import (
+    ASSET_WIDTH,
+    ASSET_X,
     WIDTH,
     LIVE_CUSTOM_TOPIC,
     LIVE_SWITCH_TOPIC,
@@ -153,7 +155,8 @@ class LivePayloadHelperTests(unittest.TestCase):
         pattern = all_pixel_pattern_10x8()
         for y, row in enumerate(pattern):
             for x, color in enumerate(row):
-                logical[y][x] = color
+                logical[y][ASSET_X + x] = color
+        add_right_zone_anchor(logical)
         width, height, rgba = synthetic_canvas(logical)
 
         sample = sample_detected_canvas_grid(width, height, rgba)
@@ -192,7 +195,8 @@ class LivePayloadHelperTests(unittest.TestCase):
         pattern = all_pixel_pattern_10x8()
         for y, row in enumerate(pattern):
             for x, color in enumerate(row):
-                logical[y][x] = color
+                logical[y][ASSET_X + x] = color
+        add_right_zone_anchor(logical)
         width, height, rgba = synthetic_canvas(logical, left=17, top=11, block=22, pitch=30)
 
         naive = naive_equal_cell_sample(width, height, rgba)
@@ -316,7 +320,7 @@ class LivePayloadHelperTests(unittest.TestCase):
     def test_final_pattern_requires_all_80_left_pixels(self):
         complete = grid_with_left_pattern(all_pixel_pattern_10x8(), include_native=True)
         missing = [list(row) for row in complete]
-        missing[7][9] = (0, 0, 0)
+        missing[7][ASSET_X + ASSET_WIDTH - 1] = (0, 0, 0)
 
         self.assertTrue(final_pattern_match(complete).success)
         self.assertFalse(final_pattern_match(tuple(tuple(row) for row in missing)).success)
@@ -382,11 +386,17 @@ def blank_logical_grid() -> list[list[tuple[int, int, int]]]:
     return [[(0, 0, 0) for _x in range(WIDTH)] for _y in range(8)]
 
 
+def add_right_zone_anchor(grid: list[list[tuple[int, int, int]]]) -> None:
+    for y in range(8):
+        for x in (12, 16, 21, 27, 31):
+            grid[y][x] = (235, 238, 239)
+
+
 def grid_with_left_pattern(pattern, *, include_native: bool = False):
     grid = blank_logical_grid()
     for y, row in enumerate(pattern):
         for x, color in enumerate(row):
-            grid[y][x] = color
+            grid[y][ASSET_X + x] = color
     if include_native:
         for y in range(8):
             for x in (12, 13, 20, 21):

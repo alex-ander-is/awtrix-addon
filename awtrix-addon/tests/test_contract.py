@@ -31,8 +31,16 @@ from awtrix_addon.lifecycle import EventSpec, EventStore
 from awtrix_addon.mqtt import MemoryPublisher, PahoPublisher
 from awtrix_addon.palette import PaletteSnapshot, PaletteStore
 from awtrix_addon.renderer import (
+    ASSET_WIDTH,
+    ASSET_X,
     CLOCK_X,
     CLOCK_Y,
+    COLON_X,
+    HOUR_ONES_X,
+    HOUR_TENS_X,
+    MINUTE_ONES_X,
+    MINUTE_TENS_X,
+    WEEKBAR_BAR_WIDTH,
     WEEKBAR_X,
     WEEKBAR_Y,
     AssetAnimation,
@@ -173,6 +181,22 @@ class FailOncePublisher(MemoryPublisher):
             self.fail_topic = None
             raise RuntimeError("planned publish failure")
         await super().publish(topic, payload)
+
+
+class ControlledSleeper:
+    def __init__(self, testcase: unittest.TestCase):
+        self.testcase = testcase
+        self.calls: asyncio.Queue[tuple[float, asyncio.Event]] = asyncio.Queue()
+
+    async def __call__(self, seconds: float) -> None:
+        gate = asyncio.Event()
+        await self.calls.put((seconds, gate))
+        await gate.wait()
+
+    async def next_gate(self) -> asyncio.Event:
+        seconds, gate = await asyncio.wait_for(self.calls.get(), timeout=1)
+        self.testcase.assertEqual(seconds, 1)
+        return gate
 
 
 async def dispatch(app, handler, path, *, headers=None, body=None, match_info=None):
@@ -671,7 +695,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 201)
         payload = next(payload for topic, payload in self.publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
-        self.assertTrue(any(bitmap[WEEKBAR_Y * 32 + x] != 0 for x in range(WEEKBAR_X, WEEKBAR_X + 7)))
+        self.assertTrue(
+            any(bitmap[WEEKBAR_Y * 32 + x] != 0 for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH))
+        )
 
         publisher = MemoryPublisher()
         app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
@@ -690,7 +716,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 201)
         payload = next(payload for topic, payload in publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
-        self.assertEqual([bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 7)], [0] * 7)
+        self.assertEqual(
+            [bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH)],
+            [0] * (7 * WEEKBAR_BAR_WIDTH),
+        )
 
     async def test_non_boolean_weekdays_publishes_nothing_and_creates_no_state(self):
         for value in ("false", 0, 1, None, []):
@@ -877,7 +906,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(custom_payload)
         bitmap = payload["draw"][0]["db"][4]
         for y in range(8):
-            self.assertEqual(bitmap[y * 32 : y * 32 + 10], [0xFF0000] * 10)
+            self.assertEqual(bitmap[y * 32], 0)
+            self.assertEqual(bitmap[y * 32 + ASSET_X : y * 32 + ASSET_X + ASSET_WIDTH], [0xFF0000] * ASSET_WIDTH)
 
     async def test_base64_asset_validation(self):
         image = Image.new("RGB", (2, 2), (0, 255, 0))
@@ -1179,6 +1209,44 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.publisher.published, [])
 
+    async def test_same_event_id_duration_refresh_stales_old_scheduled_task(self):
+        sleeper = ControlledSleeper(self)
+        store = EventStore(self.settings, self.publisher, now=self.now, sleep=sleeper, start_tasks=True)
+        try:
+            await store.create(EventSpec("doorbell", ("clock/a",), 5, AssetAnimation((blank_asset(),))))
+            old_gate = await sleeper.next_gate()
+            old_task = next(iter(store._tasks))
+
+            self.current = self.current + timedelta(seconds=1)
+            await store.create(EventSpec("doorbell", ("clock/a",), 30, AssetAnimation((blank_asset(),))))
+            new_gate = await sleeper.next_gate()
+            new_task = next(task for task in store._tasks if task is not old_task)
+            replacement = store._events["doorbell"]
+
+            self.assertEqual(replacement.created_at, datetime(2026, 6, 28, 12, 0, 1, tzinfo=timezone.utc))
+            self.assertEqual(replacement.expires_at, datetime(2026, 6, 28, 12, 0, 31, tzinfo=timezone.utc))
+
+            async def fail_expire_due() -> None:
+                self.fail("stale scheduled task called global expire_due")
+
+            store.expire_due = fail_expire_due
+            self.publisher.published.clear()
+            self.current = datetime(2026, 6, 28, 12, 0, 6, tzinfo=timezone.utc)
+            old_gate.set()
+            await old_task
+
+            self.assertEqual(store.snapshot(), {"clock/a": {"event_id": "doorbell", "generation": 3}})
+            self.assertEqual(self.publisher.published, [])
+
+            self.current = datetime(2026, 6, 28, 12, 0, 32, tzinfo=timezone.utc)
+            new_gate.set()
+            await new_task
+
+            self.assertEqual(store.snapshot(), {})
+            self.assertEqual(self.publisher.published, [("clock/a/custom/awtrix_addon", "")])
+        finally:
+            await store.shutdown()
+
     async def test_new_event_switches_to_its_custom_app_once_then_cleanup_only_clears_it(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
 
@@ -1292,8 +1360,9 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         payload = next(payload for topic, payload in self.publisher.published if topic == "clock/a/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
         self.assertEqual(bitmap[(CLOCK_Y + 1) * 32 + CLOCK_X], 0xFFFFFF)
-        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X], 0xFFFFFF)
-        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 6], 0x666666)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X], 0xFF0000)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 1], 0xFF0000)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 12], 0x666666)
 
     async def test_rtttl_is_published_once_and_not_replayed_when_rendered(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
@@ -1337,11 +1406,29 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
     def test_renderer_clock_and_weekbar_origins(self):
         frame = render_frame(blank_asset(), datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc))
 
-        self.assertEqual(frame.getpixel((CLOCK_X, CLOCK_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((HOUR_TENS_X, CLOCK_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((HOUR_ONES_X, CLOCK_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((COLON_X, CLOCK_Y + 1)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((MINUTE_TENS_X, CLOCK_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((MINUTE_ONES_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((CLOCK_X - 1, CLOCK_Y)), (0, 0, 0))
-        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (255, 255, 255))
-        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (102, 102, 102))
+        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (255, 0, 0))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (255, 0, 0))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (102, 102, 102))
+        sunday = render_frame(blank_asset(), datetime(2026, 6, 28, 0, 0, 2, tzinfo=timezone.utc))
+        self.assertEqual(sunday.getpixel((WEEKBAR_X + 12, WEEKBAR_Y)), (255, 0, 0))
+        self.assertEqual(sunday.getpixel((WEEKBAR_X + 13, WEEKBAR_Y)), (255, 0, 0))
         self.assertEqual(frame.size, (32, 8))
+
+    def test_renderer_places_normalized_asset_at_x_one(self):
+        asset = Image.new("RGB", (ASSET_WIDTH, 8), (12, 34, 56))
+
+        frame = render_frame(asset, datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc), weekdays=False)
+
+        self.assertTrue(all(frame.getpixel((0, y)) == (0, 0, 0) for y in range(8)))
+        for y in range(8):
+            for x in range(ASSET_X, ASSET_X + ASSET_WIDTH):
+                self.assertEqual(frame.getpixel((x, y)), (12, 34, 56))
 
     def test_renderer_palette_colors_clock_and_weekbar_without_rendering_calendar_fields(self):
         palette = PaletteSnapshot(
@@ -1356,7 +1443,8 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(frame.getpixel((CLOCK_X, CLOCK_Y)), (1, 2, 3))
         self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (4, 5, 6))
-        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (7, 8, 9))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (4, 5, 6))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (7, 8, 9))
         self.assertNotIn((10, 11, 12), list(frame.getdata()))
         self.assertNotIn((13, 14, 15), list(frame.getdata()))
         self.assertNotIn((16, 17, 18), list(frame.getdata()))
@@ -1368,7 +1456,10 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
             weekdays=False,
         )
 
-        self.assertEqual([frame.getpixel((x, WEEKBAR_Y)) for x in range(WEEKBAR_X, WEEKBAR_X + 7)], [(0, 0, 0)] * 7)
+        self.assertEqual(
+            [frame.getpixel((x, WEEKBAR_Y)) for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH)],
+            [(0, 0, 0)] * (7 * WEEKBAR_BAR_WIDTH),
+        )
 
     def test_gif_asset_metadata_comes_from_load_asset(self):
         no_loop_path = Path(self.tmp.name) / "no-loop.gif"
@@ -1410,13 +1501,13 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
             frame_bitmap(frame),
             (
                 "................................",
+                ".............#..###....###.#.#..",
+                "............##....#..#...#.#.#..",
+                ".............#..###....###.###..",
+                ".............#..#....#...#...#..",
+                "............###.###....###...#..",
                 "................................",
-                ".............#..###...###.#.#...",
-                "............##....#.#...#.#.#...",
-                ".............#..###...###.###...",
-                ".............#..#...#...#...#...",
-                "............###.###...###...#...",
-                ".................#..............",
+                "................................",
             ),
         )
 

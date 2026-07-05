@@ -10,7 +10,7 @@ from typing import Protocol, Sequence
 
 from PIL import Image
 
-from awtrix_addon.renderer import ASSET_WIDTH, HEIGHT, WIDTH, build_awtrix_payload, image_to_uint32_bitmap, render_frame
+from awtrix_addon.renderer import ASSET_WIDTH, ASSET_X, HEIGHT, WIDTH, build_awtrix_payload, image_to_uint32_bitmap, render_frame
 
 
 LIVE_CLOCK_PREFIX = "bedroom-clock"
@@ -450,8 +450,8 @@ def score_axis_fit(
     )
 
 
-def axis_fit_key(fit: AxisFit) -> tuple[int, float, float]:
-    return (fit.matched, -fit.residual, -abs(fit.pitch - fit.block_size))
+def axis_fit_key(fit: AxisFit) -> tuple[int, float, float, float]:
+    return (fit.matched, -fit.residual, -abs(fit.pitch - fit.block_size), -abs(fit.origin - fit.pitch / 2))
 
 
 def sample_grid_from_fits(width: int, height: int, rgba: RawRgba, x_fit: AxisFit, y_fit: AxisFit) -> Grid:
@@ -495,11 +495,11 @@ def median_rgb(samples: Sequence[RGB]) -> RGB:
 
 def left_zone_matches_pattern(observed: Grid, pattern: Grid | None = None, *, tolerance: int = COLOR_TOLERANCE) -> bool:
     expected = pattern or all_pixel_pattern_10x8()
-    if len(observed) < HEIGHT or any(len(row) < ASSET_WIDTH for row in observed[:HEIGHT]):
+    if len(observed) < HEIGHT or any(len(row) < ASSET_X + ASSET_WIDTH for row in observed[:HEIGHT]):
         return False
     for y in range(HEIGHT):
         for x in range(ASSET_WIDTH):
-            if not colors_close(observed[y][x], expected[y][x], tolerance=tolerance):
+            if not colors_close(observed[y][ASSET_X + x], expected[y][x], tolerance=tolerance):
                 return False
     return True
 
@@ -537,13 +537,13 @@ def match_current_fingerprint(
 
 def pattern_match_score(observed: Grid, pattern: Grid, *, tolerance: int = COLOR_TOLERANCE) -> int:
     score = 0
-    if len(observed) < HEIGHT or any(len(row) < ASSET_WIDTH for row in observed[:HEIGHT]):
+    if len(observed) < HEIGHT or any(len(row) < ASSET_X + ASSET_WIDTH for row in observed[:HEIGHT]):
         return 0
     for y in range(HEIGHT):
         for x in range(ASSET_WIDTH):
             expected_active = is_active(pattern[y][x])
-            observed_active = is_active(observed[y][x])
-            if expected_active and observed_active and colors_close(observed[y][x], pattern[y][x], tolerance=tolerance):
+            observed_active = is_active(observed[y][ASSET_X + x])
+            if expected_active and observed_active and colors_close(observed[y][ASSET_X + x], pattern[y][x], tolerance=tolerance):
                 score += 1
     return score
 
@@ -551,12 +551,12 @@ def pattern_match_score(observed: Grid, pattern: Grid, *, tolerance: int = COLOR
 def occupancy_match_score(observed: Grid, pattern: Grid) -> tuple[int, int]:
     score = 0
     false_active = 0
-    if len(observed) < HEIGHT or any(len(row) < ASSET_WIDTH for row in observed[:HEIGHT]):
+    if len(observed) < HEIGHT or any(len(row) < ASSET_X + ASSET_WIDTH for row in observed[:HEIGHT]):
         return 0, ASSET_WIDTH * HEIGHT
     for y in range(HEIGHT):
         for x in range(ASSET_WIDTH):
             expected = is_active(pattern[y][x])
-            actual = is_active(observed[y][x])
+            actual = is_active(observed[y][ASSET_X + x])
             if expected and actual:
                 score += 1
             elif not expected and actual:
@@ -572,7 +572,7 @@ def left_active_cell_count(observed: Grid) -> int:
     return sum(
         1
         for y in range(min(HEIGHT, len(observed)))
-        for x in range(min(ASSET_WIDTH, len(observed[y])))
+        for x in range(ASSET_X, min(ASSET_X + ASSET_WIDTH, len(observed[y])))
         if is_active(observed[y][x])
     )
 
@@ -581,7 +581,7 @@ def left_zone_occupancy_summary(observed: Grid) -> str:
     rows: list[str] = []
     for y in range(min(HEIGHT, len(observed))):
         row = observed[y]
-        rows.append("".join("#" if x < len(row) and is_active(row[x]) else "." for x in range(ASSET_WIDTH)))
+        rows.append("".join("#" if ASSET_X + x < len(row) and is_active(row[ASSET_X + x]) else "." for x in range(ASSET_WIDTH)))
     while len(rows) < HEIGHT:
         rows.append("." * ASSET_WIDTH)
     return "\n".join(rows)
@@ -604,7 +604,7 @@ def right_zone_has_clock_pixels(observed: Grid) -> bool:
     active = 0
     for y in range(min(HEIGHT, len(observed))):
         row = observed[y]
-        for x in range(ASSET_WIDTH, min(WIDTH, len(row))):
+        for x in range(ASSET_X + ASSET_WIDTH, min(WIDTH, len(row))):
             if is_active(row[x]):
                 active += 1
     return active >= 8
