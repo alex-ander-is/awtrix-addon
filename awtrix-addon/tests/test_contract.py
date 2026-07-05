@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,7 +29,18 @@ from awtrix_addon.auth import AuthManager, TokenManagedByOptions
 from awtrix_addon.errors import api_error_middleware
 from awtrix_addon.lifecycle import EventSpec, EventStore
 from awtrix_addon.mqtt import MemoryPublisher, PahoPublisher
-from awtrix_addon.renderer import AssetAnimation, blank_asset, load_asset, load_asset_bytes, render_frame
+from awtrix_addon.palette import PaletteSnapshot, PaletteStore
+from awtrix_addon.renderer import (
+    CLOCK_X,
+    CLOCK_Y,
+    WEEKBAR_X,
+    WEEKBAR_Y,
+    AssetAnimation,
+    blank_asset,
+    load_asset,
+    load_asset_bytes,
+    render_frame,
+)
 from awtrix_addon.settings import StartupConfigError, settings_from_options
 
 
@@ -89,8 +101,10 @@ class FakePahoClient:
         self.calls: list[str] = []
         self.username_password = None
         self.on_connect = None
+        self.on_message = None
         self.connected = False
         self.published: list[tuple[str, str | bytes, int, bool]] = []
+        self.subscriptions: list[tuple[str, int]] = []
 
     def username_pw_set(self, username, password):
         self.calls.append("username_pw_set")
@@ -121,10 +135,23 @@ class FakePahoClient:
         self.published.append((topic, payload, qos, retain))
         return type("PublishResult", (), {"rc": 0})()
 
+    def subscribe(self, topic, qos=0):
+        self.subscriptions.append((topic, qos))
+        return (0, len(self.subscriptions))
+
+    def simulate_message(self, topic, payload):
+        message = type("Message", (), {"topic": topic, "payload": payload})()
+        self.on_message(self, None, message)
+
 
 class FakeRecoveringPublisher:
+    instances = []
+
     def __init__(self, *_args, **_kwargs):
         self.started = False
+        self.args = _args
+        self.kwargs = _kwargs
+        self.__class__.instances.append(self)
 
     async def start(self):
         self.started = True
@@ -220,6 +247,30 @@ def frame_bitmap(image: Image.Image) -> tuple[str, ...]:
         "".join("#" if rgb.getpixel((x, y)) == (255, 255, 255) else "." for x in range(rgb.width))
         for y in range(rgb.height)
     )
+
+
+def payload_bitmap(payload: str | bytes) -> list[int]:
+    raw = json.loads(payload)
+    return raw["draw"][0]["db"][4]
+
+
+class local_timezone:
+    def __init__(self, zone: str):
+        self.zone = zone
+        self.previous = os.environ.get("TZ")
+
+    def __enter__(self):
+        os.environ["TZ"] = self.zone
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        if self.previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.previous
+        if hasattr(time, "tzset"):
+            time.tzset()
 
 
 class ConfigAuthTests(unittest.TestCase):
@@ -409,6 +460,69 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(publisher._username)
         self.assertIsNone(publisher._password)
 
+    async def test_publisher_subscribes_and_resubscribes_to_configured_settings_topics(self):
+        client = FakePahoClient(connack=0)
+        seen = []
+        publisher = PahoPublisher(
+            "core-mosquitto",
+            1883,
+            "awtrix",
+            "mqtt-password",
+            settings_prefixes=("clock/a", "clock/b"),
+            settings_callback=lambda prefix, payload: seen.append((prefix, payload)) or True,
+            client_factory=lambda: client,
+            connect_timeout=0.01,
+        )
+
+        await publisher.start()
+        client.on_connect(client, None, None, 0)
+        client.simulate_message("clock/a/settings", b'{"TCOL":"#010203"}')
+        client.simulate_message("clock/missing/settings", b'{"TCOL":"#FFFFFF"}')
+
+        self.assertEqual(
+            client.subscriptions,
+            [
+                ("clock/a/settings", 0),
+                ("clock/b/settings", 0),
+                ("clock/a/settings", 0),
+                ("clock/b/settings", 0),
+            ],
+        )
+        self.assertEqual(seen, [("clock/a", b'{"TCOL":"#010203"}')])
+        self.assertEqual(client.published, [])
+
+    async def test_refreshed_mqtt_client_subscribes_and_accepts_settings_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = FakePahoClient(connack=0)
+            refreshed = FakePahoClient(connack=0)
+            clients = iter((first, refreshed))
+            store = PaletteStore(Path(directory) / "awtrix-addon-palettes.json", ("clock/a",))
+
+            def provide_credentials():
+                return ("refreshed-broker", 1884, "refreshed-user", "refreshed-password")
+
+            publisher = PahoPublisher(
+                "initial-broker",
+                1883,
+                "initial-user",
+                "initial-password",
+                credentials_provider=provide_credentials,
+                settings_prefixes=("clock/a",),
+                settings_callback=store.handle_settings,
+                client_factory=lambda: next(clients),
+                connect_timeout=0.01,
+            )
+            await publisher.start()
+            first.connected = False
+
+            await publisher.publish("clock/a/custom/awtrix_addon", "payload")
+            refreshed.simulate_message("clock/a/settings", b'{"TCOL":"#010203","WDCA":[4,5,6]}')
+
+            self.assertEqual(refreshed.subscriptions, [("clock/a/settings", 0)])
+            self.assertEqual(store.snapshot("clock/a").time_color, (1, 2, 3))
+            self.assertEqual(store.snapshot("clock/a").weekday_active_color, (4, 5, 6))
+            self.assertEqual(refreshed.published, [("clock/a/custom/awtrix_addon", "payload", 0, False)])
+
     async def test_startup_recovers_when_supervisor_mqtt_is_not_ready_yet(self):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
@@ -429,6 +543,7 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
             async def fake_sleep(seconds):
                 sleeps.append(seconds)
 
+            FakeRecoveringPublisher.instances = []
             with (
                 patch.object(main_module, "load_mqtt_credentials", side_effect=attempts),
                 patch.object(main_module, "PahoPublisher", FakeRecoveringPublisher),
@@ -439,6 +554,13 @@ class SupervisorMqttTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app["startup_error"])
             self.assertIn("store", app)
             self.assertTrue(app["publisher"].started)
+            self.assertIs(app["palette_store"], app["store"].palette_store)
+            self.assertIsInstance(app["palette_store"], PaletteStore)
+            self.assertEqual(app["palette_store"].path, data_dir / "awtrix-addon-palettes.json")
+            publisher = FakeRecoveringPublisher.instances[-1]
+            self.assertEqual(publisher.kwargs["settings_prefixes"], ("clock/kitchen", "clock/office"))
+            self.assertIs(publisher.kwargs["settings_callback"].__self__, app["palette_store"])
+            self.assertIs(publisher.kwargs["settings_callback"].__func__, app["palette_store"].handle_settings.__func__)
 
     async def test_invalid_supervisor_credentials_stop_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -538,6 +660,63 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response_json(cancel), {"restored": ["clock/kitchen"]})
         self.assertIn(("clock/kitchen/custom/awtrix_addon", ""), self.publisher.published)
 
+    async def test_weekdays_defaults_to_visible_and_false_suppresses_weekbar(self):
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"event_id": "with-weekbar", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10},
+        )
+        self.assertEqual(response.status, 201)
+        payload = next(payload for topic, payload in self.publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
+        bitmap = payload_bitmap(payload)
+        self.assertTrue(any(bitmap[WEEKBAR_Y * 32 + x] != 0 for x in range(WEEKBAR_X, WEEKBAR_X + 7)))
+
+        publisher = MemoryPublisher()
+        app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
+        response = await dispatch(
+            app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "without-weekbar",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "weekdays": False,
+            },
+        )
+        self.assertEqual(response.status, 201)
+        payload = next(payload for topic, payload in publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
+        bitmap = payload_bitmap(payload)
+        self.assertEqual([bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 7)], [0] * 7)
+
+    async def test_non_boolean_weekdays_publishes_nothing_and_creates_no_state(self):
+        for value in ("false", 0, 1, None, []):
+            with self.subTest(value=value):
+                publisher = MemoryPublisher()
+                app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
+
+                response = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={
+                        "event_id": "bad-weekdays",
+                        "clock_prefixes": ["clock/kitchen"],
+                        "duration_seconds": 10,
+                        "weekdays": value,
+                    },
+                )
+
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response_json(response)["message"], "weekdays must be a boolean")
+                self.assertEqual(publisher.published, [])
+                self.assertEqual(app["store"].snapshot(), {})
+                self.assertEqual(app["store"]._events, {})
+
     async def test_library_melody_resolves_default_and_personal(self):
         personal_dir = Path(self.data.name) / "library" / "melodies" / "Personal"
         personal_dir.mkdir(parents=True)
@@ -585,6 +764,26 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 201)
         self.assertIn(("clock/kitchen/rtttl", melody), new_publisher.published)
+
+    async def test_refresh_restart_or_version_update_does_not_resurrect_active_events(self):
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={"event_id": "transient", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10},
+        )
+        self.assertEqual(response.status, 201)
+        self.assertEqual(self.app["store"].snapshot(), {"clock/kitchen": {"event_id": "transient", "generation": 1}})
+        self.assertTrue(self.app["palette_store"].handle_settings("clock/kitchen", b'{"TCOL":"#010203"}'))
+
+        restart_publisher = MemoryPublisher()
+        restarted = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), restart_publisher, start_tasks=False)
+
+        self.assertEqual(restarted["store"].snapshot(), {})
+        self.assertEqual(restarted["store"]._events, {})
+        self.assertEqual(restart_publisher.published, [])
+        self.assertEqual(restarted["palette_store"].snapshot("clock/kitchen").time_color, (1, 2, 3))
 
     async def test_invalid_melody_and_rtttl_requests_leave_no_state_and_allow_same_id_retry(self):
         personal_dir = Path(self.data.name) / "library" / "melodies" / "Personal"
@@ -1079,6 +1278,23 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         await store.shutdown()
         self.assertEqual(self.publisher.published.count(("clock/a/custom/awtrix_addon", "")), 1)
 
+    async def test_render_timestamp_uses_local_day_boundary_but_lifecycle_stays_utc(self):
+        self.current = datetime(2026, 6, 28, 22, 5, 2, tzinfo=timezone.utc)
+        store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
+
+        with local_timezone("Europe/Prague"):
+            await store.create(self.spec("day-boundary", ["clock/a"]))
+
+        event = store._events["day-boundary"]
+        self.assertEqual(event.created_at, datetime(2026, 6, 28, 22, 5, 2, tzinfo=timezone.utc))
+        self.assertEqual(event.expires_at, datetime(2026, 6, 28, 22, 5, 12, tzinfo=timezone.utc))
+
+        payload = next(payload for topic, payload in self.publisher.published if topic == "clock/a/custom/awtrix_addon")
+        bitmap = payload_bitmap(payload)
+        self.assertEqual(bitmap[(CLOCK_Y + 1) * 32 + CLOCK_X], 0xFFFFFF)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X], 0xFFFFFF)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 6], 0x666666)
+
     async def test_rtttl_is_published_once_and_not_replayed_when_rendered(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
         melody = "chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p"
@@ -1117,6 +1333,42 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         even = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 2, tzinfo=timezone.utc))
         odd = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 3, tzinfo=timezone.utc))
         self.assertNotEqual(even.tobytes(), odd.tobytes())
+
+    def test_renderer_clock_and_weekbar_origins(self):
+        frame = render_frame(blank_asset(), datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc))
+
+        self.assertEqual(frame.getpixel((CLOCK_X, CLOCK_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((CLOCK_X - 1, CLOCK_Y)), (0, 0, 0))
+        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (102, 102, 102))
+        self.assertEqual(frame.size, (32, 8))
+
+    def test_renderer_palette_colors_clock_and_weekbar_without_rendering_calendar_fields(self):
+        palette = PaletteSnapshot(
+            time_color=(1, 2, 3),
+            weekday_active_color=(4, 5, 6),
+            weekday_inactive_color=(7, 8, 9),
+            calendar_header_color=(10, 11, 12),
+            calendar_body_color=(13, 14, 15),
+            calendar_text_color=(16, 17, 18),
+        )
+        frame = render_frame(blank_asset(), datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc), palette=palette)
+
+        self.assertEqual(frame.getpixel((CLOCK_X, CLOCK_Y)), (1, 2, 3))
+        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (4, 5, 6))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (7, 8, 9))
+        self.assertNotIn((10, 11, 12), list(frame.getdata()))
+        self.assertNotIn((13, 14, 15), list(frame.getdata()))
+        self.assertNotIn((16, 17, 18), list(frame.getdata()))
+
+    def test_renderer_can_suppress_weekbar(self):
+        frame = render_frame(
+            blank_asset(),
+            datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc),
+            weekdays=False,
+        )
+
+        self.assertEqual([frame.getpixel((x, WEEKBAR_Y)) for x in range(WEEKBAR_X, WEEKBAR_X + 7)], [(0, 0, 0)] * 7)
 
     def test_gif_asset_metadata_comes_from_load_asset(self):
         no_loop_path = Path(self.tmp.name) / "no-loop.gif"
@@ -1158,15 +1410,156 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
             frame_bitmap(frame),
             (
                 "................................",
+                "................................",
                 ".............#..###...###.#.#...",
                 "............##....#.#...#.#.#...",
                 ".............#..###...###.###...",
                 ".............#..#...#...#...#...",
                 "............###.###...###...#...",
-                "................................",
-                "................................",
+                ".................#..............",
             ),
         )
+
+
+class PalettePersistenceTests(unittest.TestCase):
+    def test_valid_settings_save_and_load_for_configured_prefixes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            store = PaletteStore(path, ("clock/a",))
+
+            self.assertTrue(
+                store.handle_settings(
+                    "clock/a",
+                    json.dumps(
+                        {
+                            "TCOL": "#010203",
+                            "TIME_COL": [9, 8, 7],
+                            "WDCA": "0A0B0C",
+                            "WDCI": [13, 14, 15],
+                            "CHCOL": "#101112",
+                            "CBCOL": "131415",
+                            "CTCOL": [22, 23, 24],
+                        }
+                    ),
+                )
+            )
+
+            snapshot = store.snapshot("clock/a")
+            self.assertEqual(snapshot.time_color, (9, 8, 7))
+            self.assertEqual(snapshot.weekday_active_color, (10, 11, 12))
+            self.assertEqual(snapshot.weekday_inactive_color, (13, 14, 15))
+            self.assertEqual(snapshot.calendar_header_color, (16, 17, 18))
+            self.assertEqual(snapshot.calendar_body_color, (19, 20, 21))
+            self.assertEqual(snapshot.calendar_text_color, (22, 23, 24))
+
+            loaded = PaletteStore(path, ("clock/a",))
+            self.assertEqual(loaded.snapshot("clock/a"), snapshot)
+
+            self.assertTrue(store.handle_settings("clock/a", b'{"TCOL":"#010203","TIME_COL":0}'))
+            self.assertEqual(store.snapshot("clock/a").time_color, (1, 2, 3))
+
+    def test_partial_settings_merge_over_current_snapshot_in_memory_and_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            store = PaletteStore(path, ("clock/a",))
+
+            self.assertTrue(store.handle_settings("clock/a", b'{"TCOL":"#010203","WDCA":"#040506"}'))
+            self.assertTrue(store.handle_settings("clock/a", b'{"WDCI":"#070809"}'))
+
+            snapshot = store.snapshot("clock/a")
+            self.assertEqual(snapshot.time_color, (1, 2, 3))
+            self.assertEqual(snapshot.weekday_active_color, (4, 5, 6))
+            self.assertEqual(snapshot.weekday_inactive_color, (7, 8, 9))
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["prefixes"]["clock/a"]["time_color"], "#010203")
+            self.assertEqual(saved["prefixes"]["clock/a"]["weekday_active_color"], "#040506")
+            self.assertEqual(saved["prefixes"]["clock/a"]["weekday_inactive_color"], "#070809")
+
+    def test_unknown_stale_prefixes_are_ignored_and_pruned_on_next_valid_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "awtrix-addon-palettes",
+                        "version": 1,
+                        "prefixes": {
+                            "clock/a": {"time_color": "#010203"},
+                            "clock/stale": {"time_color": "#FFFFFF"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = PaletteStore(path, ("clock/a",))
+            self.assertEqual(store.snapshots(), {"clock/a": store.snapshot("clock/a")})
+            self.assertEqual(store.snapshot("clock/a").time_color, (1, 2, 3))
+            self.assertIn("clock/stale", json.loads(path.read_text(encoding="utf-8"))["prefixes"])
+
+            self.assertTrue(store.handle_settings("clock/a", b'{"TCOL":"#040506"}'))
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(sorted(saved["prefixes"]), ["clock/a"])
+            self.assertEqual(saved["prefixes"]["clock/a"]["time_color"], "#040506")
+
+    def test_corrupt_json_loads_empty_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            path.write_text("{not-json", encoding="utf-8")
+
+            store = PaletteStore(path, ("clock/a",))
+
+            self.assertEqual(store.snapshots(), {})
+            self.assertEqual(path.read_text(encoding="utf-8"), "{not-json")
+
+    def test_malformed_settings_payload_keeps_memory_and_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            store = PaletteStore(path, ("clock/a",))
+            self.assertTrue(store.handle_settings("clock/a", b'{"TCOL":"#010203"}'))
+            before_text = path.read_text(encoding="utf-8")
+            before_snapshot = store.snapshot("clock/a")
+
+            self.assertFalse(store.handle_settings("clock/a", b'{"TCOL":0}'))
+            self.assertFalse(store.handle_settings("clock/a", b'{"TIME_COL":0.0}'))
+            self.assertFalse(store.handle_settings("clock/a", b'{"WDCA":[1,2,256]}'))
+            self.assertFalse(store.handle_settings("clock/a", b'not json'))
+
+            self.assertEqual(path.read_text(encoding="utf-8"), before_text)
+            self.assertEqual(store.snapshot("clock/a"), before_snapshot)
+
+    def test_schema_or_version_mismatch_loads_empty_without_overwrite(self):
+        cases = [
+            {"schema": "wrong", "version": 1, "prefixes": {"clock/a": {"time_color": "#010203"}}},
+            {"schema": "awtrix-addon-palettes", "version": 2, "prefixes": {"clock/a": {"time_color": "#010203"}}},
+            {"schema": "awtrix-addon-palettes", "version": 1, "prefixes": []},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "awtrix-addon-palettes.json"
+                    text = json.dumps(payload)
+                    path.write_text(text, encoding="utf-8")
+
+                    store = PaletteStore(path, ("clock/a",))
+
+                    self.assertEqual(store.snapshots(), {})
+                    self.assertEqual(path.read_text(encoding="utf-8"), text)
+
+    def test_snapshots_are_immutable_and_not_mutated_by_later_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "awtrix-addon-palettes.json"
+            store = PaletteStore(path, ("clock/a",))
+            old = store.snapshot("clock/a")
+
+            self.assertTrue(store.handle_settings("clock/a", b'{"TCOL":"#010203"}'))
+
+            self.assertEqual(old.time_color, (255, 255, 255))
+            self.assertEqual(store.snapshot("clock/a").time_color, (1, 2, 3))
+            with self.assertRaises(Exception):
+                old.time_color = (1, 2, 3)
 
 
 class MetadataTests(unittest.TestCase):

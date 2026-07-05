@@ -8,11 +8,17 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence
 
+from .palette import DEFAULT_PALETTE, PaletteSnapshot
+
 
 WIDTH = 32
 HEIGHT = 8
 ASSET_WIDTH = 10
 CLOCK_WIDTH = 22
+CLOCK_X = 12
+CLOCK_Y = 2
+WEEKBAR_X = 11
+WEEKBAR_Y = 7
 
 
 DIGITS: dict[str, tuple[str, ...]] = {
@@ -62,15 +68,29 @@ def load_asset_bytes(data: bytes) -> AssetAnimation:
         return _load_animation(image)
 
 
-def render_frame(asset: Image.Image, now: datetime) -> Image.Image:
+def render_frame(
+    asset: Image.Image,
+    now: datetime,
+    *,
+    weekdays: bool = True,
+    palette: PaletteSnapshot = DEFAULT_PALETTE,
+) -> Image.Image:
     canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     canvas.paste(_normalize_frame(asset), (0, 0))
-    _draw_clock(canvas, now)
+    _draw_clock(canvas, now, palette.time_color)
+    if weekdays:
+        _draw_weekbar(canvas, now, palette)
     return canvas
 
 
-def build_awtrix_payload(asset: Image.Image, now: datetime) -> str:
-    frame = render_frame(asset, now)
+def build_awtrix_payload(
+    asset: Image.Image,
+    now: datetime,
+    *,
+    weekdays: bool = True,
+    palette: PaletteSnapshot = DEFAULT_PALETTE,
+) -> str:
+    frame = render_frame(asset, now, weekdays=weekdays, palette=palette)
     return json.dumps(
         {"draw": [{"db": [0, 0, WIDTH, HEIGHT, image_to_uint32_bitmap(frame)]}], "duration": 1},
         separators=(",", ":"),
@@ -95,21 +115,28 @@ def _load_animation(image: Image.Image) -> AssetAnimation:
     return AssetAnimation(frames or (blank_asset(),), loop=loop)
 
 
-def _draw_clock(canvas: Image.Image, now: datetime) -> None:
+def _draw_clock(canvas: Image.Image, now: datetime, color: tuple[int, int, int]) -> None:
     text = now.strftime("%H:%M")
     colon_on = now.second % 2 == 0
-    x = ASSET_WIDTH + 2
-    y = 1
+    x = CLOCK_X
+    y = CLOCK_Y
     for ch in text:
         if ch == ":":
             if colon_on:
-                canvas.putpixel((x, y + 1), (255, 255, 255))
-                canvas.putpixel((x, y + 3), (255, 255, 255))
+                canvas.putpixel((x, y + 1), color)
+                canvas.putpixel((x, y + 3), color)
             x += 2
             continue
         glyph = DIGITS[ch]
         for row, bits in enumerate(glyph):
             for col, bit in enumerate(bits):
                 if bit == "1":
-                    canvas.putpixel((x + col, y + row), (255, 255, 255))
+                    canvas.putpixel((x + col, y + row), color)
         x += 4
+
+
+def _draw_weekbar(canvas: Image.Image, now: datetime, palette: PaletteSnapshot) -> None:
+    active = now.date().weekday()
+    for index in range(7):
+        color = palette.weekday_active_color if index == active else palette.weekday_inactive_color
+        canvas.putpixel((WEEKBAR_X + index, WEEKBAR_Y), color)

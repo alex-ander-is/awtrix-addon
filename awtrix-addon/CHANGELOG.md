@@ -2,6 +2,12 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.16
+
+- Add strict `weekdays` event control for showing or suppressing the weekday bar.
+- Render events with local display time while keeping lifecycle timestamps UTC-aware.
+- Listen read-only to configured AWTRIX settings topics and persist display palette snapshots under `/data/awtrix-addon-palettes.json`.
+
 ## 0.1.15
 
 - Switch each new event to its AWTRIX custom app so the picture is visible immediately, while cleanup still removes only that custom app.

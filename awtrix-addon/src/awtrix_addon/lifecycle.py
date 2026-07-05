@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from .mqtt import Publisher
+from .palette import DEFAULT_PALETTE, PaletteStore
 from .renderer import AssetAnimation, build_awtrix_payload
 from .settings import Settings
 
@@ -32,6 +33,7 @@ class Event:
     expires_at: datetime
     asset: AssetAnimation
     rtttl: str | None = None
+    weekdays: bool = True
     frame_index: int = 0
     states: dict[str, str] = field(default_factory=dict)
 
@@ -43,6 +45,7 @@ class EventSpec:
     duration_seconds: int
     asset: AssetAnimation
     rtttl: str | None = None
+    weekdays: bool = True
 
 
 class EventStore:
@@ -53,12 +56,14 @@ class EventStore:
         *,
         now: Clock | None = None,
         sleep: Sleeper | None = None,
+        palette_store: PaletteStore | None = None,
         start_tasks: bool = True,
     ):
         self.settings = settings
         self.publisher = publisher
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.sleep = sleep or asyncio.sleep
+        self.palette_store = palette_store
         self._lock = asyncio.Lock()
         self._current: dict[str, Binding] = {}
         self._generations: dict[str, int] = defaultdict(int)
@@ -70,7 +75,7 @@ class EventStore:
         if spec.duration_seconds <= 0:
             raise ValueError("duration_seconds must be positive")
         event_id = spec.event_id or uuid.uuid4().hex
-        created_at = self.now()
+        created_at = self._now_utc()
         expires_at = created_at.timestamp() + spec.duration_seconds
         async with self._lock:
             snapshot = self._snapshot_locked()
@@ -104,6 +109,7 @@ class EventStore:
                     expires_at=datetime.fromtimestamp(expires_at, timezone.utc),
                     asset=spec.asset,
                     rtttl=spec.rtttl,
+                    weekdays=spec.weekdays,
                     states={prefix: "active" for prefix in spec.clock_prefixes},
                 )
                 self._events[event_id] = event
@@ -130,7 +136,7 @@ class EventStore:
                 await self._publish_frame_locked(event)
 
     async def expire_due(self) -> None:
-        now = self.now()
+        now = self._now_utc()
         expired = [event_id for event_id, event in self._events.items() if event.expires_at <= now]
         for event_id in expired:
             await self.cancel_event(event_id, final_state="expired")
@@ -198,12 +204,19 @@ class EventStore:
         return restored
 
     async def _publish_frame_locked(self, event: Event) -> None:
-        now = self.now()
+        now = self._now_utc()
+        render_now = now.astimezone()
         frame = event.asset.frame_at(event.frame_index)
         event.frame_index += 1
-        payload = build_awtrix_payload(frame, now)
         for prefix, binding in event.bindings.items():
             if self._current.get(prefix) == binding:
+                palette = self.palette_store.snapshot(prefix) if self.palette_store else DEFAULT_PALETTE
+                payload = build_awtrix_payload(
+                    frame,
+                    render_now,
+                    weekdays=event.weekdays,
+                    palette=palette,
+                )
                 await self.publisher.publish(f"{prefix}/custom/{self.settings.app_name}", payload)
 
     async def _switch_to_event_locked(self, event: Event) -> None:
@@ -248,6 +261,12 @@ class EventStore:
             event.states = states
             event.frame_index = frame_index
             self._events[event_id] = event
+
+    def _now_utc(self) -> datetime:
+        current = self.now()
+        if current.tzinfo is None or current.utcoffset() is None:
+            return current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
 
 
 def response_event(event_id: str, clock_prefixes: tuple[str, ...]) -> str:

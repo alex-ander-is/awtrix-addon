@@ -12,6 +12,7 @@ from .errors import ApiError, api_error_middleware, error_payload, json_error
 from .lifecycle import EventSpec, EventStore
 from .melodies import MelodyError, MelodyLibrary, MelodyNotFound, validate_rtttl
 from .mqtt import Publisher
+from .palette import PaletteStore
 from .renderer import load_asset, load_asset_bytes
 from .settings import Settings, StartupConfigError, invalid_prefix_details, settings_from_options, validate_request_prefixes
 
@@ -22,6 +23,7 @@ def make_app(
     publisher: Publisher | None,
     *,
     data_dir: Path = Path("/data"),
+    palette_store: PaletteStore | None = None,
     startup_error: StartupConfigError | None = None,
     start_tasks: bool = True,
 ) -> web.Application:
@@ -30,7 +32,7 @@ def make_app(
     app["auth"] = auth
     app["startup_error"] = startup_error
     if settings and publisher:
-        attach_runtime(app, settings, publisher, data_dir=data_dir, start_tasks=start_tasks)
+        attach_runtime(app, settings, publisher, data_dir=data_dir, palette_store=palette_store, start_tasks=start_tasks)
 
     app.router.add_get("/health", health)
     app.router.add_post("/api/events", create_event)
@@ -46,10 +48,14 @@ def attach_runtime(
     publisher: Publisher,
     *,
     data_dir: Path = Path("/data"),
+    palette_store: PaletteStore | None = None,
     start_tasks: bool = True,
 ) -> None:
+    if palette_store is None:
+        palette_store = PaletteStore(data_dir / "awtrix-addon-palettes.json", settings.clock_prefixes)
     app["settings"] = settings
-    app["store"] = EventStore(settings, publisher, start_tasks=start_tasks)
+    app["palette_store"] = palette_store
+    app["store"] = EventStore(settings, publisher, palette_store=palette_store, start_tasks=start_tasks)
     app["melody_library"] = MelodyLibrary(data_dir)
     app["publisher"] = publisher
 
@@ -114,6 +120,9 @@ async def create_event(request: web.Request) -> web.Response:
     duration = body.get("duration_seconds", 30)
     if not isinstance(duration, int) or duration <= 0:
         raise ApiError(400, "bad_request", "duration_seconds must be a positive integer")
+    weekdays = body.get("weekdays", True)
+    if not isinstance(weekdays, bool):
+        raise ApiError(400, "bad_request", "weekdays must be a boolean")
     asset = _request_asset(settings, body)
     rtttl = _request_rtttl(body, request.app["melody_library"])
 
@@ -123,6 +132,7 @@ async def create_event(request: web.Request) -> web.Response:
         duration_seconds=duration,
         asset=asset,
         rtttl=rtttl,
+        weekdays=weekdays,
     )
     store: EventStore = request.app["store"]
     event_id = await store.create(spec)

@@ -47,6 +47,7 @@ rest_command:
         "event_id": "{{ event_id }}",
         "clock_prefixes": {{ clock_prefixes | default([]) | to_json }},
         "duration_seconds": {{ duration_seconds | int(20) }},
+        "weekdays": {{ weekdays | default(true) | to_json }},
         "asset": "{{ asset | default('') }}",
         "asset_base64": "{{ asset_base64 | default('') }}",
         "melody": "{{ melody | default('') }}",
@@ -76,6 +77,7 @@ data:
   clock_prefixes:
     - bedroom-clock
   duration_seconds: 20
+  weekdays: true
   asset: ""
   melody: "Default/Arkanoid"
 ```
@@ -92,6 +94,36 @@ data:
 An `event_id` is a replace key, not a uniqueness constraint. Sending the same
 ID again replaces its active event immediately; clocks omitted from the new
 request are cleared.
+
+`weekdays` is optional and defaults to `true`. Set it to `false` to hide the
+seven-pixel weekday bar while keeping the clock. Any non-boolean value is
+rejected before an event is created or MQTT is published.
+
+## Display Palette
+
+The App subscribes read-only to each configured `<prefix>/settings` topic so it
+can learn AWTRIX display colors. It never writes settings, palette, brightness,
+moodlight, indicators, or a forced `Clock` command.
+
+Supported color fields are `TCOL`, `TIME_COL`, `WDCA`, `WDCI`, `CHCOL`,
+`CBCOL`, and `CTCOL` as `[r,g,b]` integers from `0` to `255`, `#RRGGBB`, or
+`RRGGBB`. `TIME_COL: 0` falls back to `TCOL` or white.
+
+The renderer uses time color and weekday colors now. Calendar header, body, and
+text colors are persisted for future calendar rendering, but are not rendered
+by this version.
+
+Fallback colors are time `#FFFFFF`, active weekday `#FFFFFF`, inactive weekday
+`#666666`, calendar header `#FF0000`, calendar body `#FFFFFF`, and calendar
+text `#000000`.
+
+Palette snapshots are stored at `/data/awtrix-addon-palettes.json`. Refresh does
+not clear them, and restart or version update preserves the file. To reset
+colors, delete `/data/awtrix-addon-palettes.json` and restart the App; fallback
+colors apply until new AWTRIX settings arrive.
+
+Runtime events are in memory only. Refresh, restart, or version update does not
+resurrect old workflow state.
 
 ## Assets
 

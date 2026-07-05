@@ -84,6 +84,7 @@ rest_command:
         "event_id": "{{ event_id }}",
         "clock_prefixes": {{ clock_prefixes | to_json }},
         "duration_seconds": {{ duration_seconds | int(30) }},
+        "weekdays": {{ weekdays | default(true) | to_json }},
         "asset": "{{ asset | default('') }}",
         "asset_base64": "{{ asset_base64 | default('') }}",
         "melody": "{{ melody | default('') }}",
@@ -114,6 +115,7 @@ data:
   clock_prefixes:
     - awtrix
   duration_seconds: 20
+  weekdays: true
   asset: doorbell.gif
   melody: "Default/Arkanoid"
 ```
@@ -148,6 +150,10 @@ All API errors are JSON:
 ```
 
 ```json
+{"error":"bad_request","message":"weekdays must be a boolean","details":{}}
+```
+
+```json
 {"error":"managed_by_options","message":"Token is managed by App options","details":{}}
 ```
 
@@ -161,6 +167,10 @@ An `event_id` is a replace key, not a uniqueness constraint. A new request with
 the same ID replaces the active event immediately; clocks omitted from the new
 request are cleared.
 
+`weekdays` is optional and defaults to `true`. Set `"weekdays": false` to hide
+the seven-pixel weekday bar while keeping the clock. Any non-boolean value is
+rejected before an event is created or MQTT is published.
+
 ## MQTT behavior
 
 The App only publishes to:
@@ -172,7 +182,30 @@ The App only publishes to:
 The switch makes the new custom page visible immediately. Restore is only an
 empty payload to `<prefix>/custom/<app_name>`, which removes that page and
 returns control to AWTRIX's normal app loop. The App never publishes AWTRIX
-`settings`, brightness, palette, or a forced `Clock` command.
+`settings`, brightness, palette, moodlight, indicators, or a forced `Clock` command.
+
+The App subscribes read-only to each configured `<prefix>/settings` topic to
+learn AWTRIX display colors. It never writes settings, palette, brightness,
+moodlight, or indicators.
+
+## Display palette
+
+Settings messages may provide `TCOL`, `TIME_COL`, `WDCA`, `WDCI`, `CHCOL`,
+`CBCOL`, and `CTCOL` as `[r,g,b]` integers from `0` to `255`, `#RRGGBB`, or
+`RRGGBB`. `TIME_COL: 0` is a sentinel that falls back to `TCOL` or white.
+
+The event renderer uses only time color and weekday colors now. Calendar header,
+body, and text colors are parsed and persisted for future calendar rendering;
+they are not rendered by this version.
+
+Fallback colors are:
+
+- time: `#FFFFFF`
+- active weekday: `#FFFFFF`
+- inactive weekday: `#666666`
+- calendar header: `#FF0000`
+- calendar body: `#FFFFFF`
+- calendar text: `#000000`
 
 ## Melodies
 
@@ -180,7 +213,14 @@ Use `melody` for a managed melody name, for example `Default/Arkanoid` or `Perso
 
 Use `rtttl` for a one-off RTTTL expression such as `chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p`. Specify either `melody` or `rtttl`, not both. A missing library name returns `404 melody_not_found` before any event or MQTT publication. The resolved RTTTL text is published once to `<prefix>/rtttl` immediately after event creation; it is not replayed while the event is rendered, canceled, expired, or shut down.
 
-Runtime events are in memory only. Refresh, restart, or version update does not resurrect old workflow state. Generated auth and Personal melody files persist under `/data`.
+Runtime events are in memory only. Refresh, restart, or version update does not
+resurrect old workflow state. Generated auth, Personal melody files, and palette
+snapshots persist under `/data`.
+
+Palette snapshots are stored at `/data/awtrix-addon-palettes.json`. Refresh does
+not clear them, and restart or version update preserves the file. To reset
+colors, delete `/data/awtrix-addon-palettes.json` and restart the App; fallback
+colors apply until new AWTRIX settings arrive.
 
 ### Melody error contract
 

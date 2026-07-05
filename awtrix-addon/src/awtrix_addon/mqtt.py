@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from threading import Event
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Union
 
 
 CredentialsProvider = Callable[[], tuple[str, int, str, str]]
+SettingsCallback = Callable[[str, Union[str, bytes]], bool]
 
 
 class Publisher(Protocol):
@@ -39,6 +40,8 @@ class PahoPublisher:
         password: str,
         *,
         credentials_provider: CredentialsProvider | None = None,
+        settings_prefixes: tuple[str, ...] = (),
+        settings_callback: SettingsCallback | None = None,
         client_factory: Callable[[], Any] | None = None,
         connect_timeout: float = 10,
     ):
@@ -47,6 +50,9 @@ class PahoPublisher:
         self._username = username
         self._password = password
         self._credentials_provider = credentials_provider
+        self._settings_prefixes = tuple(settings_prefixes)
+        self._settings_callback = settings_callback
+        self._settings_topics = {f"{prefix}/settings": prefix for prefix in self._settings_prefixes}
         self._client_factory = client_factory
         self._connect_timeout = connect_timeout
         self._client = None
@@ -58,15 +64,31 @@ class PahoPublisher:
         client = None
         connack_received = Event()
         connack_accepted = False
+        subscribe_error: Exception | None = None
 
         def on_connect(_client, _userdata, _flags, reason_code, _properties=None) -> None:
-            nonlocal connack_accepted
+            nonlocal connack_accepted, subscribe_error
             connack_accepted = _is_accepted_connack(reason_code)
+            if connack_accepted:
+                try:
+                    self._subscribe_settings(_client)
+                except Exception as exc:
+                    subscribe_error = exc
             connack_received.set()
+
+        def on_message(_client, _userdata, message) -> None:
+            prefix = self._settings_topics.get(message.topic)
+            if prefix is None or self._settings_callback is None:
+                return
+            try:
+                self._settings_callback(prefix, message.payload)
+            except Exception:
+                return
 
         try:
             client = self._new_client()
             client.on_connect = on_connect
+            client.on_message = on_message
             client.username_pw_set(self._username, self._password)
             connect_result = client.connect(self.host, self.port, keepalive=30)
             if connect_result not in (None, 0):
@@ -76,6 +98,8 @@ class PahoPublisher:
                 raise RuntimeError("MQTT CONNACK timed out")
             if not connack_accepted:
                 raise RuntimeError("MQTT CONNACK rejected")
+            if subscribe_error is not None:
+                raise RuntimeError("MQTT settings subscribe failed") from subscribe_error
         except Exception:
             if client is not None:
                 self._cleanup_unready_client(client)
@@ -93,6 +117,15 @@ class PahoPublisher:
         except ImportError as exc:
             raise RuntimeError("paho-mqtt is required for MQTT publishing") from exc
         return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+    def _subscribe_settings(self, client: Any) -> None:
+        for prefix in self._settings_prefixes:
+            result = client.subscribe(f"{prefix}/settings", qos=0)
+            rc = getattr(result, "rc", None)
+            if rc is None and isinstance(result, tuple) and result:
+                rc = result[0]
+            if rc not in (None, 0):
+                raise RuntimeError(f"MQTT settings subscribe failed with rc={rc}")
 
     @staticmethod
     def _cleanup_unready_client(client: Any) -> None:

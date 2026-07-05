@@ -12,6 +12,7 @@ from aiohttp import web
 from .api import attach_runtime, make_app
 from .auth import AuthManager
 from .mqtt import PahoPublisher
+from .palette import PaletteStore
 from .settings import Settings
 from .settings import StartupConfigError, load_settings
 
@@ -93,7 +94,16 @@ async def _recover_mqtt_runtime(
     while True:
         try:
             host, port, username, password = await asyncio.to_thread(load_mqtt_credentials)
-            publisher = PahoPublisher(host, port, username, password, credentials_provider=load_mqtt_credentials)
+            palette_store = PaletteStore(data_dir / "awtrix-addon-palettes.json", settings.clock_prefixes)
+            publisher = PahoPublisher(
+                host,
+                port,
+                username,
+                password,
+                credentials_provider=load_mqtt_credentials,
+                settings_prefixes=settings.clock_prefixes,
+                settings_callback=palette_store.handle_settings,
+            )
             del username, password
             await publisher.start()
         except StartupConfigError as exc:
@@ -103,7 +113,7 @@ async def _recover_mqtt_runtime(
         except RuntimeError:
             app["startup_error"] = StartupConfigError("mqtt_connection_unavailable", "MQTT connection is unavailable")
         else:
-            attach_runtime(app, settings, publisher, data_dir=data_dir)
+            attach_runtime(app, settings, publisher, data_dir=data_dir, palette_store=palette_store)
             app["startup_error"] = None
             return
         await sleep(2)
