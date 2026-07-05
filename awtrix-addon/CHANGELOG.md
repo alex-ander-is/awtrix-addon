@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.18
+
+- Render 10x8 event assets from the left edge of the 32x8 frame.
+
 ## 0.1.17
 
 - Align the rendered asset, clock, and weekday bar to the AWTRIX 32x8 layout contract.

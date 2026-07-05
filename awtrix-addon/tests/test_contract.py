@@ -906,8 +906,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(custom_payload)
         bitmap = payload["draw"][0]["db"][4]
         for y in range(8):
-            self.assertEqual(bitmap[y * 32], 0)
             self.assertEqual(bitmap[y * 32 + ASSET_X : y * 32 + ASSET_X + ASSET_WIDTH], [0xFF0000] * ASSET_WIDTH)
+            self.assertEqual(bitmap[y * 32 + ASSET_X + ASSET_WIDTH], 0)
 
     async def test_base64_asset_validation(self):
         image = Image.new("RGB", (2, 2), (0, 255, 0))
@@ -1420,15 +1420,15 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sunday.getpixel((WEEKBAR_X + 13, WEEKBAR_Y)), (255, 0, 0))
         self.assertEqual(frame.size, (32, 8))
 
-    def test_renderer_places_normalized_asset_at_x_one(self):
+    def test_renderer_places_normalized_asset_at_left_edge(self):
         asset = Image.new("RGB", (ASSET_WIDTH, 8), (12, 34, 56))
 
         frame = render_frame(asset, datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc), weekdays=False)
 
-        self.assertTrue(all(frame.getpixel((0, y)) == (0, 0, 0) for y in range(8)))
         for y in range(8):
             for x in range(ASSET_X, ASSET_X + ASSET_WIDTH):
                 self.assertEqual(frame.getpixel((x, y)), (12, 34, 56))
+            self.assertEqual(frame.getpixel((ASSET_X + ASSET_WIDTH, y)), (0, 0, 0))
 
     def test_renderer_palette_colors_clock_and_weekbar_without_rendering_calendar_fields(self):
         palette = PaletteSnapshot(

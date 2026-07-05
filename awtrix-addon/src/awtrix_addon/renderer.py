@@ -14,7 +14,7 @@ from .palette import DEFAULT_PALETTE, PaletteSnapshot
 WIDTH = 32
 HEIGHT = 8
 ASSET_WIDTH = 10
-ASSET_X = 1
+ASSET_X = 0
 ASSET_Y = 0
 CLOCK_WIDTH = 22
 HOUR_TENS_X = 12
