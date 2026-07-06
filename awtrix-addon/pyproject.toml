@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awtrix-addon"
-version = "0.1.23"
+version = "0.1.24"
 description = "Home Assistant App service for controlled AWTRIX event overlays"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.9", "Pillow>=10", "paho-mqtt>=2", "PyYAML>=6"]
@@ -19,7 +19,11 @@ awtrix-addon = "awtrix_addon.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-awtrix_addon = ["library/melodies/Default/*.rtttl"]
+awtrix_addon = [
+    "library/assets/Default/*.gif",
+    "library/assets/Default/*.png",
+    "library/melodies/Default/*.rtttl",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

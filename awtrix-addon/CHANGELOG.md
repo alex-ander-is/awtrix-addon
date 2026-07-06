@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.24
+
+- Add packaged Default PNG/GIF assets for common AWTRIX reminders.
+- Allow Default asset filenames to use Unicode letters and digits while keeping path traversal blocked.
+
 ## 0.1.23
 
 - New RTTTL Melodies

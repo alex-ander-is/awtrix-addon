@@ -198,6 +198,27 @@ data:
   rtttl: ""
 ```
 
+The App also ships packaged default PNG/GIF assets. Use `asset` as
+`Default/<file>.png` or `Default/<file>.gif`, for example:
+
+```yaml
+action: rest_command.awtrix_event
+data:
+  event_id: alert
+  clock_prefixes:
+    - bedroom-clock
+  duration_seconds: 20
+  asset: Default/Пора-идти-мыться.gif
+  rtttl: ""
+```
+
+Default asset names are case-sensitive, must be a single file segment after
+`Default/`, and may contain Unicode letters, digits, `_`, `.`, and `-`.
+The `Default/...` namespace is reserved: invalid or missing `Default/...`
+assets never fall back to `assets_dir`. Only non-Default `asset` values load
+from `assets_dir`. There is no Personal asset namespace; use `assets_dir` for
+your own files.
+
 You can also send a PNG or GIF directly in the action without uploading a file. Put a plain base64 string or a `data:image/png;base64,...` / `data:image/gif;base64,...` URL in `asset_base64`:
 
 ```yaml
@@ -213,6 +234,18 @@ data:
 ```
 
 Use either `asset` or `asset_base64`, not both.
+
+Every asset error creates no event and publishes no MQTT payload, so the same
+`event_id` can be retried safely with a corrected request.
+
+### Asset error contract
+
+| Request problem | Status and JSON error |
+| --- | --- |
+| non-string `asset` | `400 {"error":"bad_request","message":"asset must be a string","details":{}}` |
+| non-string `asset_base64` | `400 {"error":"bad_request","message":"asset_base64 must be a string","details":{}}` |
+| both non-empty `asset` and `asset_base64` | `400 {"error":"bad_request","message":"asset and asset_base64 are mutually exclusive","details":{}}` |
+| invalid, missing, unreadable, or malformed `asset`; invalid `asset_base64` | `400 {"error":"bad_request","message":"asset could not be loaded","details":{}}` |
 
 ## Melodies
 

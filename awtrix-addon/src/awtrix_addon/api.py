@@ -7,6 +7,7 @@ from typing import Any
 
 from aiohttp import web
 
+from .assets import AssetError, AssetLibrary, AssetNotFound
 from .auth import AuthManager, TokenManagedByOptions
 from .errors import ApiError, api_error_middleware, error_payload, json_error
 from .lifecycle import EventSpec, EventStore
@@ -57,6 +58,7 @@ def attach_runtime(
     app["palette_store"] = palette_store
     app["store"] = EventStore(settings, publisher, palette_store=palette_store, start_tasks=start_tasks)
     app["melody_library"] = MelodyLibrary(data_dir)
+    app["asset_library"] = AssetLibrary()
     app["publisher"] = publisher
 
 
@@ -123,7 +125,7 @@ async def create_event(request: web.Request) -> web.Response:
     weekdays = body.get("weekdays", True)
     if not isinstance(weekdays, bool):
         raise ApiError(400, "bad_request", "weekdays must be a boolean")
-    asset = _request_asset(settings, body)
+    asset = _request_asset(settings, body, request.app["asset_library"])
     rtttl = _request_rtttl(body, request.app["melody_library"])
     sound_volume = _request_sound_volume(body)
 
@@ -171,7 +173,7 @@ def _request_sound_volume(body: dict[str, Any]) -> int:
     return value
 
 
-def _request_asset(settings: Settings, body: dict[str, Any]):
+def _request_asset(settings: Settings, body: dict[str, Any], library: AssetLibrary):
     asset_name = body.get("asset")
     asset_base64 = body.get("asset_base64")
     if asset_name is not None and not isinstance(asset_name, str):
@@ -183,8 +185,10 @@ def _request_asset(settings: Settings, body: dict[str, Any]):
     try:
         if asset_base64:
             return load_asset_bytes(_decode_asset_base64(asset_base64))
+        if asset_name and asset_name.startswith("Default/"):
+            return library.resolve(asset_name)
         return load_asset(settings.assets_dir, asset_name)
-    except (FileNotFoundError, ValueError, OSError, binascii.Error):
+    except (AssetNotFound, AssetError, FileNotFoundError, ValueError, OSError, binascii.Error):
         raise ApiError(400, "bad_request", "asset could not be loaded")
 
 

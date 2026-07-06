@@ -41,7 +41,7 @@ auth_token: "optional-fixed-token"
   so a typo cannot write to an unintended topic.
 - `default_clock_prefixes`: optional subset of `clock_prefixes` used when a REST
   request omits `clock_prefixes`; omitted or empty means all allowed clocks.
-- `assets_dir`: directory for PNG/GIF assets rendered 1:1 from `(0,0)` on the `32x8` canvas.
+- `assets_dir`: directory for local PNG/GIF assets rendered 1:1 from `(0,0)` on the `32x8` canvas.
 - `auth_token`: optional fixed bearer token. If omitted, the App generates one in `/data/auth.json`.
 
 Unknown option keys or unsafe configured values fail startup before MQTT is started.
@@ -295,10 +295,30 @@ The clock and weekday bar are drawn first, then the asset is composited over the
 
 Use either:
 
-- `asset`: file name under `assets_dir`.
+- `asset`: file name under `assets_dir`, or packaged `Default/<file>.png` or `Default/<file>.gif`.
 - `asset_base64`: plain base64 PNG/GIF data, or a `data:image/png;base64,...` / `data:image/gif;base64,...` URL.
 
-Do not send both `asset` and `asset_base64` in the same event.
+Packaged default assets ship with the App and update with it. For example,
+`asset: Default/Пора-идти-мыться.gif` loads the bundled bath-time reminder. Default asset names
+are case-sensitive, must be a single file segment after `Default/`, and may
+contain Unicode letters, digits, `_`, `.`, and `-`.
+The `Default/...` namespace is reserved: invalid or missing `Default/...`
+assets never fall back to `assets_dir`. Only non-Default `asset` values load
+from `assets_dir`. There is no Personal asset namespace; use `assets_dir` for
+your own files.
+
+Use either `asset` or `asset_base64`, not both. Every asset error creates no
+event and publishes no MQTT payload, so the same `event_id` can be retried
+safely with a corrected request.
+
+### Asset error contract
+
+| Request problem | Status and JSON error |
+| --- | --- |
+| non-string `asset` | `400 {"error":"bad_request","message":"asset must be a string","details":{}}` |
+| non-string `asset_base64` | `400 {"error":"bad_request","message":"asset_base64 must be a string","details":{}}` |
+| both non-empty `asset` and `asset_base64` | `400 {"error":"bad_request","message":"asset and asset_base64 are mutually exclusive","details":{}}` |
+| invalid, missing, unreadable, or malformed `asset`; invalid `asset_base64` | `400 {"error":"bad_request","message":"asset could not be loaded","details":{}}` |
 
 ## Local safety
 

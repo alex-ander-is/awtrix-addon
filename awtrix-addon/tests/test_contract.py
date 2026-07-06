@@ -25,6 +25,7 @@ from awtrix_addon.api import app_from_options, cancel_current, create_event, hea
 from awtrix_addon.api import cancel_event as cancel_event_handler
 from awtrix_addon.api import auth_middleware, startup_middleware
 from awtrix_addon import main as main_module
+from awtrix_addon.assets import AssetLibrary
 from awtrix_addon.auth import AuthManager, TokenManagedByOptions
 from awtrix_addon.errors import api_error_middleware
 from awtrix_addon.lifecycle import EventSpec, EventStore
@@ -974,6 +975,122 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bitmap[y * 32 + ASSET_X + 2], 0)
         self.assertEqual(bitmap[2 * 32 + ASSET_X], 0)
 
+    async def test_create_event_accepts_packaged_default_unicode_gif_asset(self):
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "default-png",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset": "Default/Пора-идти-мыться.gif",
+                "weekdays": False,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        event = self.app["store"]._events["default-png"]
+        self.assertTrue(event.asset.loop)
+        self.assertEqual(len(event.asset.frames), 34)
+        self.assertEqual({frame.size for frame in event.asset.frames}, {(32, 8)})
+
+    async def test_create_event_accepts_packaged_default_gif_asset(self):
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "default-gif",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset": "Default/Пора-убрать-игрушки.gif",
+                "weekdays": False,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        event = self.app["store"]._events["default-gif"]
+        self.assertTrue(event.asset.loop)
+        self.assertEqual(len(event.asset.frames), 12)
+        self.assertEqual({frame.size for frame in event.asset.frames}, {(32, 8)})
+
+    async def test_create_event_keeps_non_default_assets_dir_fallback(self):
+        local_path = Path(self.tmp.name) / "local.png"
+        Image.new("RGB", (2, 2), (0, 255, 255)).save(local_path)
+
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "local-png",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset": "local.png",
+                "weekdays": False,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        custom_payload = next(
+            payload
+            for topic, payload in self.publisher.published
+            if topic == "clock/kitchen/custom/awtrix_addon"
+        )
+        bitmap = json.loads(custom_payload)["draw"][0]["db"][4]
+        self.assertEqual(bitmap[ASSET_X : ASSET_X + 2], [0x00FFFF] * 2)
+
+    async def test_invalid_default_asset_requests_leave_no_state_and_allow_same_id_retry(self):
+        corrupt_root = Path(self.data.name) / "corrupt-default-assets"
+        corrupt_root.mkdir()
+        corrupt_root.joinpath("Broken.png").write_bytes(b"not an image")
+        cases = [
+            ("Default/Missing.png", None),
+            ("Default/Пора-идти-мыться.jpg", None),
+            ("Default/.hidden.png", None),
+            ("Default/nested/Пора-идти-мыться.gif", None),
+            ("Default/Broken.png", AssetLibrary(default_root=corrupt_root)),
+        ]
+        for asset, library in cases:
+            with self.subTest(asset=asset):
+                publisher = MemoryPublisher()
+                app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
+                if library is not None:
+                    app["asset_library"] = library
+
+                response = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={
+                        "event_id": "retryable-asset",
+                        "clock_prefixes": ["clock/kitchen"],
+                        "duration_seconds": 10,
+                        "asset": asset,
+                    },
+                )
+
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response_json(response), {"error": "bad_request", "message": "asset could not be loaded", "details": {}})
+                self.assertEqual(publisher.published, [])
+                self.assertEqual(app["store"].snapshot(), {})
+                self.assertEqual(app["store"]._events, {})
+
+                retry = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={"event_id": "retryable-asset", "clock_prefixes": ["clock/kitchen"], "duration_seconds": 10},
+                )
+                self.assertEqual(retry.status, 201)
+                self.assertEqual(response_json(retry), {"event_id": "retryable-asset", "clock_prefixes": ["clock/kitchen"]})
+
     async def test_create_event_clips_oversized_base64_asset_without_scaling(self):
         image = Image.new("RGB", (40, 10), (0, 255, 0))
         buffer = BytesIO()
@@ -1019,34 +1136,37 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(ok.status, 201)
 
-        before_conflict = list(self.publisher.published)
-        conflict = await dispatch(
-            self.app,
-            create_event,
-            "/api/events",
-            headers=self.auth(),
-            body={
-                "clock_prefixes": ["clock/kitchen"],
-                "duration_seconds": 10,
-                "asset": "icon.png",
-                "asset_base64": data_url,
-            },
-        )
-        self.assertEqual(conflict.status, 400)
-        self.assertEqual(response_json(conflict)["message"], "asset and asset_base64 are mutually exclusive")
-        self.assertEqual(self.publisher.published, before_conflict)
-
-        before_invalid = list(self.publisher.published)
-        invalid = await dispatch(
-            self.app,
-            create_event,
-            "/api/events",
-            headers=self.auth(),
-            body={"clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, "asset_base64": "not base64"},
-        )
-        self.assertEqual(invalid.status, 400)
-        self.assertEqual(response_json(invalid)["message"], "asset could not be loaded")
-        self.assertEqual(self.publisher.published, before_invalid)
+        cases = [
+            (
+                {"asset": ["icon.png"]},
+                {"error": "bad_request", "message": "asset must be a string", "details": {}},
+            ),
+            (
+                {"asset_base64": ["not base64"]},
+                {"error": "bad_request", "message": "asset_base64 must be a string", "details": {}},
+            ),
+            (
+                {"asset": "icon.png", "asset_base64": data_url},
+                {"error": "bad_request", "message": "asset and asset_base64 are mutually exclusive", "details": {}},
+            ),
+            (
+                {"asset_base64": "not base64"},
+                {"error": "bad_request", "message": "asset could not be loaded", "details": {}},
+            ),
+        ]
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                before_invalid = list(self.publisher.published)
+                invalid = await dispatch(
+                    self.app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={"clock_prefixes": ["clock/kitchen"], "duration_seconds": 10, **extra},
+                )
+                self.assertEqual(invalid.status, 400)
+                self.assertEqual(response_json(invalid), expected)
+                self.assertEqual(self.publisher.published, before_invalid)
 
     async def test_delete_event_by_id(self):
         response = await dispatch(
@@ -1962,19 +2082,54 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("does not crop, pad, or preserve aspect ratio", readme)
         self.assertIn("asset_base64", readme)
         self.assertIn("Use either `asset` or `asset_base64`, not both.", readme)
+        self.assertIn("`Default/<file>.png` or `Default/<file>.gif`", readme)
+        self.assertIn("Default/Пора-идти-мыться.gif", readme)
+        self.assertIn("Default asset names are case-sensitive", readme)
+        self.assertIn("The `Default/...` namespace is reserved", readme)
+        self.assertIn("never fall back to", readme)
+        self.assertIn("Only non-Default `asset` values load", readme)
+        self.assertIn("from `assets_dir`", readme)
+        self.assertIn("Every asset error creates no event and publishes no MQTT payload", readme)
+        self.assertIn('400 {"error":"bad_request","message":"asset must be a string","details":{}}', readme)
+        self.assertIn('400 {"error":"bad_request","message":"asset_base64 must be a string","details":{}}', readme)
+        self.assertIn(
+            '400 {"error":"bad_request","message":"asset and asset_base64 are mutually exclusive","details":{}}',
+            readme,
+        )
+        self.assertIn('400 {"error":"bad_request","message":"asset could not be loaded","details":{}}', readme)
 
-    def test_melody_library_is_packaged_and_documented(self):
+    def test_default_libraries_are_packaged_and_documented(self):
         default_melody = ROOT / "src" / "awtrix_addon" / "library" / "melodies" / "Default" / "Arkanoid.rtttl"
+        default_bath_gif = ROOT / "src" / "awtrix_addon" / "library" / "assets" / "Default" / "Пора-идти-мыться.gif"
+        default_toys_gif = ROOT / "src" / "awtrix_addon" / "library" / "assets" / "Default" / "Пора-убрать-игрушки.gif"
         self.assertTrue(default_melody.is_file())
+        self.assertTrue(default_bath_gif.is_file())
+        self.assertTrue(default_toys_gif.is_file())
         self.assertIn("Arkanoid:d=4,o=5,b=140", default_melody.read_text(encoding="utf-8"))
-        self.assertIn("library/melodies/Default/*.rtttl", ROOT.joinpath("pyproject.toml").read_text(encoding="utf-8"))
+        pyproject = ROOT.joinpath("pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("library/assets/Default/*.png", pyproject)
+        self.assertIn("library/assets/Default/*.gif", pyproject)
+        self.assertIn("library/melodies/Default/*.rtttl", pyproject)
         for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
             text = path.read_text(encoding="utf-8")
             self.assertIn('"melody"', text)
             self.assertIn("Default/Arkanoid", text)
             self.assertIn("/data/library/melodies/Personal", text)
+            self.assertIn("Default/Пора-идти-мыться.gif", text)
+            self.assertIn("asset_base64", text)
+            self.assertIn("The `Default/...` namespace is reserved", text)
+            self.assertIn("never fall back to", text)
+            self.assertIn("Only non-Default `asset` values load", text)
+            self.assertIn("from `assets_dir`", text)
+            self.assertIn('400 {"error":"bad_request","message":"asset must be a string","details":{}}', text)
+            self.assertIn('400 {"error":"bad_request","message":"asset_base64 must be a string","details":{}}', text)
+            self.assertIn(
+                '400 {"error":"bad_request","message":"asset and asset_base64 are mutually exclusive","details":{}}',
+                text,
+            )
+            self.assertIn('400 {"error":"bad_request","message":"asset could not be loaded","details":{}}', text)
 
-    def test_installed_package_contains_default_arkanoid_resource(self):
+    def test_installed_package_contains_default_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary_root = Path(directory)
             project = temporary_root / "project"
@@ -2013,6 +2168,13 @@ origin = Path(melodies.__file__).resolve()
 assert origin.is_relative_to(target), origin
 melody = origin.with_name('library') / 'melodies' / 'Default' / 'Arkanoid.rtttl'
 assert melody.read_text(encoding='utf-8') == 'Arkanoid:d=4,o=5,b=140:8g6,16p,16g.6,2a#6,32p,8a6,8g6,8f6,8a6,2g6\\n'
+default_assets = origin.with_name('library') / 'assets' / 'Default'
+bath = default_assets / 'Пора-идти-мыться.gif'
+toys = default_assets / 'Пора-убрать-игрушки.gif'
+assert bath.is_file(), bath
+assert toys.is_file(), toys
+assert bath.read_bytes().startswith(b'GIF89a')
+assert toys.read_bytes().startswith(b'GIF89a')
 """
             subprocess.run(
                 [str(packaging_python), "-I", "-c", verifier, str(target)],
