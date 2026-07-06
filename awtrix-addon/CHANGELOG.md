@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.23
+
+- New RTTTL Melodies
+- Update: README: Repository structure
+
 ## 0.1.22
 
 - Enable AWTRIX sound automatically for melody and RTTTL events by publishing `SOUND: true` and `VOL` to the clock settings topic before RTTTL.

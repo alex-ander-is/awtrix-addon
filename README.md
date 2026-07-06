@@ -2,6 +2,8 @@
 
 Home Assistant App service that publishes and immediately shows short AWTRIX custom-app overlays without changing AWTRIX brightness, palettes, or the forced Clock app. It writes AWTRIX settings only to enable sound and set volume when an event requests a melody or RTTTL.
 
+This repository follows the Home Assistant [app repository structure](https://developers.home-assistant.io/docs/apps/repository/): root `repository.yaml`, with the app itself in its own `awtrix-addon/` folder.
+
 ## Install in Home Assistant
 
 1. Open Home Assistant.
