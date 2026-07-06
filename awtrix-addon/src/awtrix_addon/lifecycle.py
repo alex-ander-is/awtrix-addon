@@ -31,6 +31,7 @@ class Event:
     bindings: dict[str, Binding]
     created_at: datetime
     expires_at: datetime
+    duration_seconds: int
     asset: AssetAnimation
     rtttl: str | None = None
     weekdays: bool = True
@@ -107,6 +108,7 @@ class EventStore:
                     bindings=bindings,
                     created_at=created_at,
                     expires_at=datetime.fromtimestamp(expires_at, timezone.utc),
+                    duration_seconds=spec.duration_seconds,
                     asset=spec.asset,
                     rtttl=spec.rtttl,
                     weekdays=spec.weekdays,
@@ -226,6 +228,7 @@ class EventStore:
                     render_now,
                     weekdays=event.weekdays,
                     palette=palette,
+                    duration=event.duration_seconds,
                 )
                 await self.publisher.publish(f"{prefix}/custom/{self.settings.app_name}", payload)
 

@@ -17,6 +17,7 @@ from awtrix_addon.live_payload_helpers import (
     LIVE_SWITCH_TOPIC,
     active_color_clusters,
     all_pixel_pattern_10x8,
+    build_awtrix_payload,
     build_pattern_payload,
     build_live_test_payload,
     challenge_pattern_10x8,
@@ -72,6 +73,17 @@ class LivePayloadHelperTests(unittest.TestCase):
         self.assertIsInstance(draw[4], list)
         self.assertEqual(len(draw[4]), 32 * 8)
         self.assertTrue(all(isinstance(value, int) for value in draw[4]))
+
+    def test_payload_duration_can_follow_event_duration(self):
+        payload = json.loads(
+            build_awtrix_payload(
+                pattern_to_image(all_pixel_pattern_10x8()),
+                datetime(2026, 6, 28, 12, 0, 0),
+                duration=30,
+            )
+        )
+
+        self.assertEqual(payload["duration"], 30)
 
     def test_payload_rejects_old_hex_string_db_regression(self):
         payload = json.loads(build_live_test_payload(datetime(2026, 6, 28, 12, 0, 0)))

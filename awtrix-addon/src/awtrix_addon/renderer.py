@@ -20,13 +20,14 @@ CLOCK_WIDTH = 22
 HOUR_TENS_X = 12
 HOUR_ONES_X = 16
 COLON_X = 21
-MINUTE_TENS_X = 23
-MINUTE_ONES_X = 27
+MINUTE_TENS_X = 22
+MINUTE_ONES_X = 26
 CLOCK_X = HOUR_TENS_X
 CLOCK_Y = 1
-WEEKBAR_X = 11
+WEEKBAR_X = 10
 WEEKBAR_Y = 7
 WEEKBAR_BAR_WIDTH = 2
+WEEKBAR_BAR_STRIDE = 3
 
 
 DIGITS: dict[str, tuple[str, ...]] = {
@@ -97,10 +98,11 @@ def build_awtrix_payload(
     *,
     weekdays: bool = True,
     palette: PaletteSnapshot = DEFAULT_PALETTE,
+    duration: int = 1,
 ) -> str:
     frame = render_frame(asset, now, weekdays=weekdays, palette=palette)
     return json.dumps(
-        {"draw": [{"db": [0, 0, WIDTH, HEIGHT, image_to_uint32_bitmap(frame)]}], "duration": 1},
+        {"draw": [{"db": [0, 0, WIDTH, HEIGHT, image_to_uint32_bitmap(frame)]}], "duration": duration},
         separators=(",", ":"),
     )
 
@@ -146,6 +148,6 @@ def _draw_weekbar(canvas: Image.Image, now: datetime, palette: PaletteSnapshot) 
     active = now.date().weekday()
     for index in range(7):
         color = palette.weekday_active_color if index == active else palette.weekday_inactive_color
-        x = WEEKBAR_X + index * WEEKBAR_BAR_WIDTH
+        x = WEEKBAR_X + index * WEEKBAR_BAR_STRIDE
         for offset in range(WEEKBAR_BAR_WIDTH):
             canvas.putpixel((x + offset, WEEKBAR_Y), color)

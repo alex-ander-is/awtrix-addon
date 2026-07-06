@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.19
+
+- Match the AWTRIX clock and weekday bar layout with weekday gaps and default colors.
+- Pass event `duration_seconds` through to the AWTRIX custom app payload.
+
 ## 0.1.18
 
 - Render 10x8 event assets from the left edge of the 32x8 frame.

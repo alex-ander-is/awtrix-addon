@@ -40,6 +40,7 @@ from awtrix_addon.renderer import (
     HOUR_TENS_X,
     MINUTE_ONES_X,
     MINUTE_TENS_X,
+    WEEKBAR_BAR_STRIDE,
     WEEKBAR_BAR_WIDTH,
     WEEKBAR_X,
     WEEKBAR_Y,
@@ -672,6 +673,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("clock/kitchen/rtttl", melody), self.publisher.published)
         self.assertNotIn("clock/kitchen/settings", topics)
         self.assertTrue(all("/brightness" not in topic and "/palette" not in topic for topic in topics))
+        payload = next(payload for topic, payload in self.publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
+        self.assertEqual(json.loads(payload)["duration"], 10)
 
         cancel = await dispatch(
             self.app,
@@ -696,7 +699,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         payload = next(payload for topic, payload in self.publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
         self.assertTrue(
-            any(bitmap[WEEKBAR_Y * 32 + x] != 0 for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH))
+            any(bitmap[WEEKBAR_Y * 32 + x] != 0 for x in range(WEEKBAR_X, WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH))
         )
 
         publisher = MemoryPublisher()
@@ -717,8 +720,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         payload = next(payload for topic, payload in publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
         self.assertEqual(
-            [bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH)],
-            [0] * (7 * WEEKBAR_BAR_WIDTH),
+            [bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH)],
+            [0] * (6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH),
         )
 
     async def test_non_boolean_weekdays_publishes_nothing_and_creates_no_state(self):
@@ -894,6 +897,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 "clock_prefixes": ["clock/kitchen"],
                 "duration_seconds": 10,
                 "asset_base64": encoded,
+                "weekdays": False,
             },
         )
 
@@ -1360,9 +1364,10 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         payload = next(payload for topic, payload in self.publisher.published if topic == "clock/a/custom/awtrix_addon")
         bitmap = payload_bitmap(payload)
         self.assertEqual(bitmap[(CLOCK_Y + 1) * 32 + CLOCK_X], 0xFFFFFF)
-        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X], 0xFF0000)
-        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 1], 0xFF0000)
-        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 12], 0x666666)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X], 0xFFFFFF)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 1], 0xFFFFFF)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + 2], 0)
+        self.assertEqual(bitmap[WEEKBAR_Y * 32 + WEEKBAR_X + WEEKBAR_BAR_STRIDE], 0x666666)
 
     async def test_rtttl_is_published_once_and_not_replayed_when_rendered(self):
         store = EventStore(self.settings, self.publisher, now=self.now, start_tasks=False)
@@ -1412,12 +1417,13 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame.getpixel((MINUTE_TENS_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((MINUTE_ONES_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((CLOCK_X - 1, CLOCK_Y)), (0, 0, 0))
-        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (255, 0, 0))
-        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (255, 0, 0))
-        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (102, 102, 102))
+        self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (0, 0, 0))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + WEEKBAR_BAR_STRIDE, WEEKBAR_Y)), (102, 102, 102))
         sunday = render_frame(blank_asset(), datetime(2026, 6, 28, 0, 0, 2, tzinfo=timezone.utc))
-        self.assertEqual(sunday.getpixel((WEEKBAR_X + 12, WEEKBAR_Y)), (255, 0, 0))
-        self.assertEqual(sunday.getpixel((WEEKBAR_X + 13, WEEKBAR_Y)), (255, 0, 0))
+        self.assertEqual(sunday.getpixel((WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE, WEEKBAR_Y)), (255, 255, 255))
+        self.assertEqual(sunday.getpixel((WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + 1, WEEKBAR_Y)), (255, 255, 255))
         self.assertEqual(frame.size, (32, 8))
 
     def test_renderer_places_normalized_asset_at_left_edge(self):
@@ -1444,7 +1450,8 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame.getpixel((CLOCK_X, CLOCK_Y)), (1, 2, 3))
         self.assertEqual(frame.getpixel((WEEKBAR_X, WEEKBAR_Y)), (4, 5, 6))
         self.assertEqual(frame.getpixel((WEEKBAR_X + 1, WEEKBAR_Y)), (4, 5, 6))
-        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (7, 8, 9))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + 2, WEEKBAR_Y)), (0, 0, 0))
+        self.assertEqual(frame.getpixel((WEEKBAR_X + WEEKBAR_BAR_STRIDE, WEEKBAR_Y)), (7, 8, 9))
         self.assertNotIn((10, 11, 12), list(frame.getdata()))
         self.assertNotIn((13, 14, 15), list(frame.getdata()))
         self.assertNotIn((16, 17, 18), list(frame.getdata()))
@@ -1457,8 +1464,8 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [frame.getpixel((x, WEEKBAR_Y)) for x in range(WEEKBAR_X, WEEKBAR_X + 7 * WEEKBAR_BAR_WIDTH)],
-            [(0, 0, 0)] * (7 * WEEKBAR_BAR_WIDTH),
+            [frame.getpixel((x, WEEKBAR_Y)) for x in range(WEEKBAR_X, WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH)],
+            [(0, 0, 0)] * (6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH),
         )
 
     def test_gif_asset_metadata_comes_from_load_asset(self):
@@ -1501,13 +1508,13 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
             frame_bitmap(frame),
             (
                 "................................",
-                ".............#..###....###.#.#..",
-                "............##....#..#...#.#.#..",
-                ".............#..###....###.###..",
-                ".............#..#....#...#...#..",
-                "............###.###....###...#..",
+                ".............#..###...###.#.#...",
+                "............##....#..#..#.#.#...",
+                ".............#..###...###.###...",
+                ".............#..#....#..#...#...",
+                "............###.###...###...#...",
                 "................................",
-                "................................",
+                "............................##..",
             ),
         )
 
