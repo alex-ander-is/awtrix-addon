@@ -32,7 +32,13 @@ auth_token: "optional-fixed-token"
 
 - `app_name`: one MQTT segment, `A-Z`, `a-z`, `0-9`, `_`, `-`, max 40 chars.
 - `clock_prefixes`: required non-empty allowlist of AWTRIX MQTT topic prefixes.
-- `default_clock_prefixes`: optional subset of `clock_prefixes`; omitted means all clocks.
+  This is the MQTT topic prefix allowlist. These are the clock topic roots the
+  App may publish to, for example `bedroom-clock` for
+  `bedroom-clock/custom/awtrix_addon` and `bedroom-clock/switch`. Requests for
+  any prefix outside this list return `400 invalid_clock_prefixes` before MQTT publish,
+  so a typo cannot write to an unintended topic.
+- `default_clock_prefixes`: optional subset of `clock_prefixes` used when a REST
+  request omits `clock_prefixes`; omitted or empty means all allowed clocks.
 - `assets_dir`: directory for PNG/GIF assets normalized to a 10x8 left-side area.
 - `auth_token`: optional fixed bearer token. If omitted, the App generates one in `/data/auth.json`.
 
@@ -131,6 +137,35 @@ data:
 action: rest_command.awtrix_delete_event
 data:
   event_id: doorbell
+```
+
+To make REST failures visible in the automation trace, capture the response and
+raise an error after emitting a trace event with the API response details:
+
+```yaml
+sequence:
+  - action: rest_command.awtrix_event
+    response_variable: awtrix_response
+    data:
+      event_id: doorbell
+      clock_prefixes:
+        - awtrix
+      duration_seconds: 30
+      weekdays: true
+      asset_base64: ""
+      rtttl: ""
+
+  - if:
+      - condition: template
+        value_template: "{{ awtrix_response.status != 201 }}"
+    then:
+      - event: awtrix_request_failed
+        event_data:
+          status: "{{ awtrix_response.status }}"
+          content: "{{ awtrix_response.content | to_json }}"
+
+      - stop: "AWTRIX request failed"
+        error: true
 ```
 
 ## API errors

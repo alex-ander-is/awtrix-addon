@@ -1414,6 +1414,7 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame.getpixel((HOUR_TENS_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((HOUR_ONES_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((COLON_X, CLOCK_Y + 1)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((COLON_X + 1, CLOCK_Y + 1)), (0, 0, 0))
         self.assertEqual(frame.getpixel((MINUTE_TENS_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((MINUTE_ONES_X, CLOCK_Y)), (255, 255, 255))
         self.assertEqual(frame.getpixel((CLOCK_X - 1, CLOCK_Y)), (0, 0, 0))
@@ -1509,9 +1510,9 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
             (
                 "................................",
                 ".............#..###...###.#.#...",
-                "............##....#..#..#.#.#...",
+                "............##....#.#...#.#.#...",
                 ".............#..###...###.###...",
-                ".............#..#....#..#...#...",
+                ".............#..#...#...#...#...",
                 "............###.###...###...#...",
                 "................................",
                 "............................##..",
@@ -1802,6 +1803,15 @@ class MetadataTests(unittest.TestCase):
             self.assertIn("event_id` is a replace key", text)
             self.assertNotIn("duplicate_event_id", text)
 
+    def test_readmes_document_trace_visible_rest_errors(self):
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("response_variable: awtrix_response", text)
+            self.assertIn("event: awtrix_request_failed", text)
+            self.assertIn('stop: "AWTRIX request failed"', text)
+            self.assertIn("content: \"{{ awtrix_response.content | to_json }}\"", text)
+            self.assertNotIn("message: \"{{ awtrix_response.content.message", text)
+
     def test_readmes_document_immediate_custom_app_switch_and_cleanup(self):
         for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
             text = path.read_text(encoding="utf-8")
@@ -1932,6 +1942,26 @@ assert melody.read_text(encoding='utf-8') == 'Arkanoid:d=4,o=5,b=140:8g6,16p,16g
         self.assertIn("default_clock_prefixes", config["schema"])
         self.assertNotIn("auth_token?", config["schema"])
         self.assertNotIn("default_clock_prefixes?", config["schema"])
+
+        translations = yaml.safe_load(ROOT.joinpath("translations", "en.yaml").read_text())
+        configuration = translations["configuration"]
+        self.assertIn("Allowed AWTRIX MQTT prefixes", configuration["clock_prefixes"]["name"])
+        self.assertIn("allowlist", configuration["clock_prefixes"]["description"])
+        self.assertIn("rejected before MQTT publish", configuration["clock_prefixes"]["description"])
+        self.assertIn("Default AWTRIX MQTT prefixes", configuration["default_clock_prefixes"]["name"])
+        self.assertIn("Leave empty to use all allowed clocks", configuration["default_clock_prefixes"]["description"])
+
+    def test_readmes_document_clock_prefix_allowlist(self):
+        required = (
+            "MQTT topic prefix allowlist",
+            "`400 invalid_clock_prefixes` before MQTT publish",
+            "`default_clock_prefixes`",
+        )
+        for path in (REPO_ROOT / "README.md", ROOT / "README.md"):
+            text = path.read_text(encoding="utf-8")
+            for value in required:
+                with self.subTest(path=path, value=value):
+                    self.assertIn(value, text)
 
 
 if __name__ == "__main__":

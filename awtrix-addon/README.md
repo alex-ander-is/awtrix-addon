@@ -30,6 +30,13 @@ The App is reachable from Home Assistant Core at
 `http://35664e22-awtrix-addon:8099`. The URL is not sensitive; keep only the
 authorization value in `secrets.yaml`.
 
+`clock_prefixes` is the MQTT topic prefix allowlist for clocks this App may
+publish to. Add every AWTRIX clock you want to target, for example
+`bedroom-clock` and `kids-room-clock`. A request for any other prefix returns
+`400 invalid_clock_prefixes` before MQTT publish, so typos and unintended
+topics are rejected. `default_clock_prefixes` is the subset used when a REST request
+omits `clock_prefixes`; leave it empty to target all allowed clocks by default.
+
 ## Home Assistant REST Commands
 
 Add this to Home Assistant configuration:
@@ -89,6 +96,35 @@ action: rest_command.awtrix_cancel_current
 data:
   clock_prefixes:
     - bedroom-clock
+```
+
+To make REST failures visible in the automation trace, capture the response and
+raise an error after emitting a trace event with the API response details:
+
+```yaml
+sequence:
+  - action: rest_command.awtrix_event
+    response_variable: awtrix_response
+    data:
+      event_id: doorbell
+      clock_prefixes:
+        - bedroom-clock
+      duration_seconds: 30
+      weekdays: true
+      asset_base64: ""
+      rtttl: ""
+
+  - if:
+      - condition: template
+        value_template: "{{ awtrix_response.status != 201 }}"
+    then:
+      - event: awtrix_request_failed
+        event_data:
+          status: "{{ awtrix_response.status }}"
+          content: "{{ awtrix_response.content | to_json }}"
+
+      - stop: "AWTRIX request failed"
+        error: true
 ```
 
 An `event_id` is a replace key, not a uniqueness constraint. Sending the same

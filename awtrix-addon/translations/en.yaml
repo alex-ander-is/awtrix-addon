@@ -1,0 +1,12 @@
+configuration:
+  clock_prefixes:
+    name: Allowed AWTRIX MQTT prefixes
+    description: >-
+      Topic prefix allowlist for clocks this App may publish to, for example
+      bedroom-clock or kids-room-clock. Requests for any other prefix are
+      rejected before MQTT publish.
+  default_clock_prefixes:
+    name: Default AWTRIX MQTT prefixes
+    description: >-
+      Optional subset of the allowed prefixes used when a REST request omits
+      clock_prefixes. Leave empty to use all allowed clocks.

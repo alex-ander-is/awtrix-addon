@@ -2,6 +2,12 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.20
+
+- Place the clock colon in the gap between hours and minutes.
+- Explain allowed AWTRIX MQTT prefixes in the App configuration UI and documentation.
+- Document a Home Assistant script pattern that exposes REST errors in automation traces.
+
 ## 0.1.19
 
 - Match the AWTRIX clock and weekday bar layout with weekday gaps and default colors.
