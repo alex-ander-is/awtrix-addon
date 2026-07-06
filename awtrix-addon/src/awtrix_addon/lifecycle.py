@@ -35,6 +35,7 @@ class Event:
     asset: AssetAnimation
     rtttl: str | None = None
     weekdays: bool = True
+    sound_volume: int = 50
     frame_index: int = 0
     states: dict[str, str] = field(default_factory=dict)
 
@@ -47,6 +48,7 @@ class EventSpec:
     asset: AssetAnimation
     rtttl: str | None = None
     weekdays: bool = True
+    sound_volume: int = 50
 
 
 class EventStore:
@@ -112,6 +114,7 @@ class EventStore:
                     asset=spec.asset,
                     rtttl=spec.rtttl,
                     weekdays=spec.weekdays,
+                    sound_volume=spec.sound_volume,
                     states={prefix: "active" for prefix in spec.clock_prefixes},
                 )
                 self._events[event_id] = event
@@ -119,6 +122,7 @@ class EventStore:
                 await self._switch_to_event_locked(event)
                 for prefix in spec.clock_prefixes:
                     if spec.rtttl:
+                        await self.publisher.publish(f"{prefix}/settings", sound_settings_payload(spec.sound_volume))
                         await self.publisher.publish(f"{prefix}/rtttl", spec.rtttl)
             except Exception:
                 self._restore_locked(snapshot)
@@ -284,3 +288,7 @@ class EventStore:
 
 def response_event(event_id: str, clock_prefixes: tuple[str, ...]) -> str:
     return json.dumps({"event_id": event_id, "clock_prefixes": list(clock_prefixes)}, separators=(",", ":"))
+
+
+def sound_settings_payload(volume: int) -> str:
+    return json.dumps({"SOUND": True, "VOL": volume}, separators=(",", ":"))

@@ -2,6 +2,12 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.22
+
+- Enable AWTRIX sound automatically for melody and RTTTL events by publishing `SOUND: true` and `VOL` to the clock settings topic before RTTTL.
+- Add optional `sound_volume` REST field, defaulting to `50`, with strict `0..100` validation before any MQTT or EventStore side effects.
+- Document that Home Assistant scripts should call only the App for sound events; no separate MQTT `SOUND` or `VOL` action is needed.
+
 ## 0.1.21
 
 - Render PNG/GIF assets 1:1 from the top-left origin on the full 32x8 canvas, clipping pixels outside the display instead of resizing to 10x8.

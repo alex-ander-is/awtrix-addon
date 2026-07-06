@@ -668,10 +668,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response_json(response), {"event_id": "evt-1", "clock_prefixes": ["clock/kitchen"]})
         topics = [topic for topic, _payload in self.publisher.published]
         self.assertIn("clock/kitchen/custom/awtrix_addon", topics)
+        self.assertIn("clock/kitchen/settings", topics)
         self.assertIn("clock/kitchen/rtttl", topics)
+        self.assertIn(("clock/kitchen/settings", '{"SOUND":true,"VOL":50}'), self.publisher.published)
         self.assertIn(("clock/kitchen/rtttl", melody), self.publisher.published)
-        self.assertNotIn("clock/kitchen/settings", topics)
-        self.assertTrue(all("/brightness" not in topic and "/palette" not in topic for topic in topics))
+        self.assertLess(
+            self.publisher.published.index(("clock/kitchen/settings", '{"SOUND":true,"VOL":50}')),
+            self.publisher.published.index(("clock/kitchen/rtttl", melody)),
+        )
+        self.assertTrue(
+            all(
+                "/brightness" not in topic and "/palette" not in topic and "/moodlight" not in topic
+                for topic in topics
+            )
+        )
         payload = next(payload for topic, payload in self.publisher.published if topic == "clock/kitchen/custom/awtrix_addon")
         self.assertEqual(json.loads(payload)["duration"], 10)
 
@@ -722,6 +732,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             [bitmap[WEEKBAR_Y * 32 + x] for x in range(WEEKBAR_X, WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH)],
             [0] * (6 * WEEKBAR_BAR_STRIDE + WEEKBAR_BAR_WIDTH),
         )
+        self.assertNotIn("clock/kitchen/settings", [topic for topic, _payload in publisher.published])
 
     async def test_non_boolean_weekdays_publishes_nothing_and_creates_no_state(self):
         for value in ("false", 0, 1, None, []):
@@ -744,6 +755,56 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(response.status, 400)
                 self.assertEqual(response_json(response)["message"], "weekdays must be a boolean")
+                self.assertEqual(publisher.published, [])
+                self.assertEqual(app["store"].snapshot(), {})
+                self.assertEqual(app["store"]._events, {})
+
+    async def test_sound_volume_override_is_published_before_rtttl(self):
+        melody = "chime:d=4,o=5,b=120:c,e,g"
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "sound-volume",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "rtttl": melody,
+                "sound_volume": 25,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        expected = [
+            ("clock/kitchen/settings", '{"SOUND":true,"VOL":25}'),
+            ("clock/kitchen/rtttl", melody),
+        ]
+        indexes = [self.publisher.published.index(item) for item in expected]
+        self.assertEqual(indexes, sorted(indexes))
+
+    async def test_invalid_sound_volume_publishes_nothing_and_creates_no_state(self):
+        for value in ("50", True, -1, 101, None, []):
+            with self.subTest(value=value):
+                publisher = MemoryPublisher()
+                app = app_from_options(base_options(Path(self.tmp.name)), Path(self.data.name), publisher, start_tasks=False)
+
+                response = await dispatch(
+                    app,
+                    create_event,
+                    "/api/events",
+                    headers=self.auth(),
+                    body={
+                        "event_id": "bad-volume",
+                        "clock_prefixes": ["clock/kitchen"],
+                        "duration_seconds": 10,
+                        "rtttl": "Retry:d=4,o=5,b=120:c",
+                        "sound_volume": value,
+                    },
+                )
+
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response_json(response)["message"], "sound_volume must be an integer from 0 through 100")
                 self.assertEqual(publisher.published, [])
                 self.assertEqual(app["store"].snapshot(), {})
                 self.assertEqual(app["store"]._events, {})
@@ -1364,6 +1425,16 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         spec = self.spec("new-switch", ["clock/a", "clock/b"])
         await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/switch")
 
+    async def test_second_sound_settings_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
+        spec = EventSpec(
+            "new-sound-settings",
+            ("clock/a", "clock/b"),
+            10,
+            AssetAnimation((blank_asset(),)),
+            rtttl="beep:d=4,o=5,b=100:c",
+        )
+        await self._assert_create_failure_rolls_back_and_retries(spec, "clock/b/settings")
+
     async def test_second_rtttl_failure_rolls_back_multi_clock_supersede_and_allows_retry(self):
         spec = EventSpec(
             "new-rtttl",
@@ -1409,7 +1480,9 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         await store.create(EventSpec("evt", ("clock/a",), 10, AssetAnimation((blank_asset(),)), rtttl=melody))
         self.current = self.current + timedelta(seconds=1)
         await store.render_once("evt")
+        settings_messages = [item for item in self.publisher.published if item == ("clock/a/settings", '{"SOUND":true,"VOL":50}')]
         rtttl_messages = [item for item in self.publisher.published if item == ("clock/a/rtttl", melody)]
+        self.assertEqual(len(settings_messages), 1)
         self.assertEqual(len(rtttl_messages), 1)
         custom_payloads = [payload for topic, payload in self.publisher.published if topic == "clock/a/custom/awtrix_addon"]
         self.assertEqual(len(custom_payloads), 2)
@@ -1964,11 +2037,15 @@ assert melody.read_text(encoding='utf-8') == 'Arkanoid:d=4,o=5,b=140:8g6,16p,16g
         required = (
             '"melody": "{{ melody | default(\'\') }}"',
             '"rtttl": "{{ rtttl | default(\'\') }}"',
+            '"sound_volume": {{ sound_volume | default(50) | int }}',
             'melody: "Default/Arkanoid"',
+            "sound_volume: 50",
             "/data/library/melodies/Personal",
             "Names are case-sensitive",
             "An empty `melody` or `rtttl` means no melody.",
             "Specify either `melody` or `rtttl`, not both.",
+            '`{"SOUND":true,"VOL":<sound_volume>}`',
+            "`sound_volume` is optional, defaults to `50`, and must be an integer from `0` through `100`.",
             "RTTTL defaults must include exactly `d`, `o`, and `b`",
             "tempo is `25` through `900`",
             '{"error":"invalid_melody","message":"melody must be a string","details":{}}',
@@ -1977,6 +2054,7 @@ assert melody.read_text(encoding='utf-8') == 'Arkanoid:d=4,o=5,b=140:8g6,16p,16g
             '{"error":"invalid_rtttl","message":"rtttl must be a string","details":{}}',
             '{"error":"invalid_rtttl","message":"rtttl must be a valid RTTTL expression","details":{}}',
             '{"error":"invalid_melody","message":"melody and rtttl are mutually exclusive","details":{}}',
+            '{"error":"bad_request","message":"sound_volume must be an integer from 0 through 100","details":{}}',
             "creates no event and publishes no MQTT payload",
             "same `event_id` can be retried safely",
         )

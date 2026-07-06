@@ -125,6 +125,7 @@ async def create_event(request: web.Request) -> web.Response:
         raise ApiError(400, "bad_request", "weekdays must be a boolean")
     asset = _request_asset(settings, body)
     rtttl = _request_rtttl(body, request.app["melody_library"])
+    sound_volume = _request_sound_volume(body)
 
     spec = EventSpec(
         event_id=body.get("event_id") if isinstance(body.get("event_id"), str) else None,
@@ -133,6 +134,7 @@ async def create_event(request: web.Request) -> web.Response:
         asset=asset,
         rtttl=rtttl,
         weekdays=weekdays,
+        sound_volume=sound_volume,
     )
     store: EventStore = request.app["store"]
     event_id = await store.create(spec)
@@ -160,6 +162,13 @@ def _request_rtttl(body: dict[str, Any], library: MelodyLibrary) -> str | None:
         if melody:
             raise ApiError(400, "invalid_melody", "melody must be a valid library reference") from None
         raise ApiError(400, "invalid_rtttl", "rtttl must be a valid RTTTL expression") from None
+
+
+def _request_sound_volume(body: dict[str, Any]) -> int:
+    value = body.get("sound_volume", 50)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        raise ApiError(400, "bad_request", "sound_volume must be an integer from 0 through 100")
+    return value
 
 
 def _request_asset(settings: Settings, body: dict[str, Any]):

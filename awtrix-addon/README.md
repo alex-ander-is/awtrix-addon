@@ -4,8 +4,9 @@ This App lets Home Assistant show a temporary custom picture on AWTRIX immediate
 
 It switches to its own custom app with `<prefix>/switch` and
 `{"name":"<app_name>","fast":true}`. It does not change AWTRIX brightness,
-palette, settings, or publish a forced `Clock` command. Removing the custom app
-at event end returns control to AWTRIX's normal app loop.
+palette, or publish a forced `Clock` command. It writes AWTRIX settings only to
+enable sound and set volume when an event requests a melody or RTTTL. Removing
+the custom app at event end returns control to AWTRIX's normal app loop.
 
 ## Basic Configuration
 
@@ -58,7 +59,8 @@ rest_command:
         "asset": "{{ asset | default('') }}",
         "asset_base64": "{{ asset_base64 | default('') }}",
         "melody": "{{ melody | default('') }}",
-        "rtttl": "{{ rtttl | default('') }}"
+        "rtttl": "{{ rtttl | default('') }}",
+        "sound_volume": {{ sound_volume | default(50) | int }}
       }
 
   awtrix_cancel_current:
@@ -87,6 +89,7 @@ data:
   weekdays: true
   asset: ""
   melody: "Default/Arkanoid"
+  sound_volume: 50
 ```
 
 Cancel the current App display:
@@ -112,7 +115,8 @@ sequence:
       duration_seconds: 30
       weekdays: true
       asset_base64: ""
-      rtttl: ""
+      melody: Default/Arkanoid
+      sound_volume: 50
 
   - if:
       - condition: template
@@ -127,6 +131,11 @@ sequence:
         error: true
 ```
 
+For sound, send only `melody` or `rtttl` to this App. Do not add a separate
+Home Assistant `mqtt.publish` action for `SOUND` or `VOL`; the App publishes
+`{"SOUND":true,"VOL":<sound_volume>}` to each target `<prefix>/settings` topic
+before `<prefix>/rtttl`. Omit `sound_volume` to use the default `50`.
+
 An `event_id` is a replace key, not a uniqueness constraint. Sending the same
 ID again replaces its active event immediately; clocks omitted from the new
 request are cleared.
@@ -138,8 +147,11 @@ rejected before an event is created or MQTT is published.
 ## Display Palette
 
 The App subscribes read-only to each configured `<prefix>/settings` topic so it
-can learn AWTRIX display colors. It never writes settings, palette, brightness,
-moodlight, indicators, or a forced `Clock` command.
+can learn AWTRIX display colors. This listener is read-only. The only settings
+write the App performs is `{"SOUND":true,"VOL":<sound_volume>}` immediately
+before `<prefix>/rtttl`, and only when an event has `melody` or `rtttl`. It
+never writes palette, brightness, moodlight, indicators, or a forced `Clock`
+command.
 
 Supported color fields are `TCOL`, `TIME_COL`, `WDCA`, `WDCI`, `CHCOL`,
 `CBCOL`, and `CTCOL` as `[r,g,b]` integers from `0` to `255`, `#RRGGBB`, or
@@ -206,7 +218,7 @@ Use either `asset` or `asset_base64`, not both.
 
 Use `melody` for a managed reference such as `Default/Arkanoid` or `Personal/My_chime`. Names are case-sensitive and always include the namespace. Default melodies ship with the App and update with it. Add Personal UTF-8 `.rtttl` files manually under `/data/library/melodies/Personal`, for example `/data/library/melodies/Personal/My_chime.rtttl`; they survive restarts and App updates.
 
-Use `rtttl` for a direct one-off expression, for example `chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p`. Specify either `melody` or `rtttl`, not both. A missing library name returns `404 melody_not_found` without creating an event or publishing MQTT. The resolved RTTTL text is published once to `<prefix>/rtttl` immediately after creating the event. It is not replayed when the event is rendered, canceled, expires, or shuts down.
+Use `rtttl` for a direct one-off expression, for example `chime:d=4,o=5,b=120:c,e,g,c6,g,e,c,p,c,p`. Specify either `melody` or `rtttl`, not both. A missing library name returns `404 melody_not_found` without creating an event or publishing MQTT. When sound is requested, the App first publishes `{"SOUND":true,"VOL":<sound_volume>}` to `<prefix>/settings`, then publishes the resolved RTTTL text once to `<prefix>/rtttl`. `sound_volume` is optional, defaults to `50`, and must be an integer from `0` through `100`. The sound settings and RTTTL are not replayed when the event is rendered, canceled, expires, or shuts down.
 
 ### Melody error contract
 
@@ -222,6 +234,7 @@ RTTTL defaults must include exactly `d`, `o`, and `b`: duration is `1`, `2`, `4`
 | non-string `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a string","details":{}}` |
 | malformed `rtttl` | `400 {"error":"invalid_rtttl","message":"rtttl must be a valid RTTTL expression","details":{}}` |
 | both non-empty `melody` and `rtttl` | `400 {"error":"invalid_melody","message":"melody and rtttl are mutually exclusive","details":{}}` |
+| invalid `sound_volume` | `400 {"error":"bad_request","message":"sound_volume must be an integer from 0 through 100","details":{}}` |
 
 Every melody/RTTTL error creates no event and publishes no MQTT payload, so the same `event_id` can be retried safely with a corrected request.
 
