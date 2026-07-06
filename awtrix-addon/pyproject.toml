@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awtrix-addon"
-version = "0.1.20"
+version = "0.1.21"
 description = "Home Assistant App service for controlled AWTRIX event overlays"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.9", "Pillow>=10", "paho-mqtt>=2", "PyYAML>=6"]

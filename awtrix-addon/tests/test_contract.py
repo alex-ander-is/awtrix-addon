@@ -31,7 +31,6 @@ from awtrix_addon.lifecycle import EventSpec, EventStore
 from awtrix_addon.mqtt import MemoryPublisher, PahoPublisher
 from awtrix_addon.palette import PaletteSnapshot, PaletteStore
 from awtrix_addon.renderer import (
-    ASSET_WIDTH,
     ASSET_X,
     CLOCK_X,
     CLOCK_Y,
@@ -909,9 +908,40 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         payload = json.loads(custom_payload)
         bitmap = payload["draw"][0]["db"][4]
-        for y in range(8):
-            self.assertEqual(bitmap[y * 32 + ASSET_X : y * 32 + ASSET_X + ASSET_WIDTH], [0xFF0000] * ASSET_WIDTH)
-            self.assertEqual(bitmap[y * 32 + ASSET_X + ASSET_WIDTH], 0)
+        for y in range(2):
+            self.assertEqual(bitmap[y * 32 + ASSET_X : y * 32 + ASSET_X + 2], [0xFF0000] * 2)
+            self.assertEqual(bitmap[y * 32 + ASSET_X + 2], 0)
+        self.assertEqual(bitmap[2 * 32 + ASSET_X], 0)
+
+    async def test_create_event_clips_oversized_base64_asset_without_scaling(self):
+        image = Image.new("RGB", (40, 10), (0, 255, 0))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        response = await dispatch(
+            self.app,
+            create_event,
+            "/api/events",
+            headers=self.auth(),
+            body={
+                "event_id": "inline-oversized",
+                "clock_prefixes": ["clock/kitchen"],
+                "duration_seconds": 10,
+                "asset_base64": encoded,
+                "weekdays": False,
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        custom_payload = next(
+            payload
+            for topic, payload in self.publisher.published
+            if topic == "clock/kitchen/custom/awtrix_addon"
+        )
+        bitmap = json.loads(custom_payload)["draw"][0]["db"][4]
+        self.assertEqual(len(bitmap), 32 * 8)
+        self.assertEqual(bitmap, [0x00FF00] * (32 * 8))
 
     async def test_base64_asset_validation(self):
         image = Image.new("RGB", (2, 2), (0, 255, 0))
@@ -928,6 +958,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(ok.status, 201)
 
+        before_conflict = list(self.publisher.published)
         conflict = await dispatch(
             self.app,
             create_event,
@@ -942,7 +973,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(conflict.status, 400)
         self.assertEqual(response_json(conflict)["message"], "asset and asset_base64 are mutually exclusive")
+        self.assertEqual(self.publisher.published, before_conflict)
 
+        before_invalid = list(self.publisher.published)
         invalid = await dispatch(
             self.app,
             create_event,
@@ -952,6 +985,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(invalid.status, 400)
         self.assertEqual(response_json(invalid)["message"], "asset could not be loaded")
+        self.assertEqual(self.publisher.published, before_invalid)
 
     async def test_delete_event_by_id(self):
         response = await dispatch(
@@ -1394,15 +1428,17 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(intervals, [1])
 
-    def test_asset_normalization_and_colon_alternates(self):
+    def test_asset_loading_preserves_dimensions_and_colon_alternates(self):
         png_path = Path(self.tmp.name) / "icon.png"
         Image.new("RGB", (2, 2), (255, 0, 0)).save(png_path)
         asset = load_asset(Path(self.tmp.name), "icon.png")
-        self.assertEqual(asset.frames[0].size, (10, 8))
+        self.assertEqual(asset.frames[0].size, (2, 2))
+        self.assertEqual(asset.frames[0].mode, "RGBA")
         buffer = BytesIO()
         Image.new("RGB", (20, 16), (0, 255, 0)).save(buffer, format="PNG")
         inline_asset = load_asset_bytes(buffer.getvalue())
-        self.assertEqual(inline_asset.frames[0].size, (10, 8))
+        self.assertEqual(inline_asset.frames[0].size, (20, 16))
+        self.assertEqual(inline_asset.frames[0].mode, "RGBA")
 
         even = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 2, tzinfo=timezone.utc))
         odd = render_frame(blank_asset(), datetime(2026, 6, 28, 12, 34, 3, tzinfo=timezone.utc))
@@ -1427,15 +1463,37 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sunday.getpixel((WEEKBAR_X + 6 * WEEKBAR_BAR_STRIDE + 1, WEEKBAR_Y)), (255, 255, 255))
         self.assertEqual(frame.size, (32, 8))
 
-    def test_renderer_places_normalized_asset_at_left_edge(self):
-        asset = Image.new("RGB", (ASSET_WIDTH, 8), (12, 34, 56))
+    def test_renderer_places_small_asset_1_to_1_at_origin(self):
+        asset = Image.new("RGB", (2, 2), (12, 34, 56))
 
         frame = render_frame(asset, datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc), weekdays=False)
 
-        for y in range(8):
-            for x in range(ASSET_X, ASSET_X + ASSET_WIDTH):
+        for y in range(2):
+            for x in range(ASSET_X, ASSET_X + 2):
                 self.assertEqual(frame.getpixel((x, y)), (12, 34, 56))
-            self.assertEqual(frame.getpixel((ASSET_X + ASSET_WIDTH, y)), (0, 0, 0))
+            self.assertEqual(frame.getpixel((ASSET_X + 2, y)), (0, 0, 0))
+        self.assertEqual(frame.getpixel((ASSET_X, 2)), (0, 0, 0))
+
+    def test_renderer_clips_oversized_asset_to_32x8(self):
+        asset = Image.new("RGB", (40, 10), (12, 34, 56))
+
+        frame = render_frame(asset, datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc), weekdays=False)
+
+        self.assertEqual(frame.size, (32, 8))
+        for y in range(8):
+            for x in range(32):
+                self.assertEqual(frame.getpixel((x, y)), (12, 34, 56))
+
+    def test_renderer_composites_asset_over_clock_with_alpha(self):
+        now = datetime(2026, 6, 29, 0, 0, 2, tzinfo=timezone.utc)
+        clock_only = render_frame(blank_asset(), now, weekdays=False)
+        transparent = Image.new("RGBA", (32, 8), (0, 0, 0, 0))
+        opaque_black = Image.new("RGBA", (32, 8), (0, 0, 0, 255))
+        half_black = Image.new("RGBA", (32, 8), (0, 0, 0, 128))
+
+        self.assertEqual(render_frame(transparent, now, weekdays=False).tobytes(), clock_only.tobytes())
+        self.assertEqual(render_frame(opaque_black, now, weekdays=False).getpixel((CLOCK_X, CLOCK_Y)), (0, 0, 0))
+        self.assertEqual(render_frame(half_black, now, weekdays=False).getpixel((CLOCK_X, CLOCK_Y)), (127, 127, 127))
 
     def test_renderer_palette_colors_clock_and_weekbar_without_rendering_calendar_fields(self):
         palette = PaletteSnapshot(
@@ -1492,9 +1550,9 @@ class LifecycleRendererTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(no_loop.loop)
         self.assertFalse(finite.loop)
         self.assertTrue(looping.loop)
-        self.assertEqual([frame.size for frame in no_loop.frames], [(10, 8), (10, 8)])
-        self.assertEqual([frame.size for frame in finite.frames], [(10, 8), (10, 8)])
-        self.assertEqual([frame.size for frame in looping.frames], [(10, 8), (10, 8)])
+        self.assertEqual([frame.size for frame in no_loop.frames], [(2, 2), (2, 2)])
+        self.assertEqual([frame.size for frame in finite.frames], [(5, 4), (5, 4)])
+        self.assertEqual([frame.size for frame in looping.frames], [(5, 4), (5, 4)])
         self.assertNotEqual(no_loop.frames[0].tobytes(), no_loop.frames[1].tobytes())
         self.assertNotEqual(finite.frames[0].tobytes(), finite.frames[1].tobytes())
         self.assertNotEqual(looping.frames[0].tobytes(), looping.frames[1].tobytes())
@@ -1821,10 +1879,14 @@ class MetadataTests(unittest.TestCase):
 
     def test_app_info_readme_documents_asset_resolution(self):
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
-        self.assertIn("10x8", readme)
         self.assertIn("32x8", readme)
-        self.assertIn("resized to `10x8`", readme)
-        self.assertIn("does not crop, pad, or preserve aspect ratio", readme)
+        self.assertIn("rendered 1:1 from the top-left origin `(0,0)`", readme)
+        self.assertIn("Pixels outside the `32x8` canvas are clipped", readme)
+        self.assertIn("Transparent pixels preserve the clock", readme)
+        self.assertIn("50% alpha blends with the clock pixels underneath", readme)
+        self.assertNotIn("resized to `10x8`", readme)
+        self.assertNotIn("nearest-neighbor scaling", readme)
+        self.assertNotIn("does not crop, pad, or preserve aspect ratio", readme)
         self.assertIn("asset_base64", readme)
         self.assertIn("Use either `asset` or `asset_base64`, not both.", readme)
 

@@ -39,7 +39,7 @@ auth_token: "optional-fixed-token"
   so a typo cannot write to an unintended topic.
 - `default_clock_prefixes`: optional subset of `clock_prefixes` used when a REST
   request omits `clock_prefixes`; omitted or empty means all allowed clocks.
-- `assets_dir`: directory for PNG/GIF assets normalized to a 10x8 left-side area.
+- `assets_dir`: directory for PNG/GIF assets rendered 1:1 from `(0,0)` on the `32x8` canvas.
 - `auth_token`: optional fixed bearer token. If omitted, the App generates one in `/data/auth.json`.
 
 Unknown option keys or unsafe configured values fail startup before MQTT is started.
@@ -276,7 +276,9 @@ Every melody/RTTTL error creates no event and publishes no MQTT payload, so the 
 
 ## Assets
 
-The left asset area is exactly `10x8` pixels inside the full `32x8` AWTRIX canvas. PNG/GIF files loaded through `asset` and inline PNG/GIF payloads sent through `asset_base64` are both resized to `10x8` with nearest-neighbor scaling. The App does not crop, pad, or preserve aspect ratio.
+PNG/GIF files loaded through `asset` and inline PNG/GIF payloads sent through `asset_base64` are rendered 1:1 from the top-left origin `(0,0)` on the full `32x8` AWTRIX canvas. Pixels outside the `32x8` canvas are clipped and ignored; x=0..31 and y=0..7 are visible. There is no resize, stretch, padding, or 10x8 normalization.
+
+The clock and weekday bar are drawn first, then the asset is composited over them. Transparent pixels preserve the clock pixels underneath, opaque pixels cover them, opaque black hides them, and 50% alpha blends with the clock pixels underneath. RGB assets are treated as fully opaque.
 
 Use either:
 

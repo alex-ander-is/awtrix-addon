@@ -2,6 +2,11 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.21
+
+- Render PNG/GIF assets 1:1 from the top-left origin on the full 32x8 canvas, clipping pixels outside the display instead of resizing to 10x8.
+- Composite assets over the clock and weekday bar so transparent pixels preserve the clock, opaque pixels cover it, and partial alpha blends with it.
+
 ## 0.1.20
 
 - Place the clock colon in the gap between hours and minutes.

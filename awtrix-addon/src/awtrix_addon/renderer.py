@@ -13,7 +13,6 @@ from .palette import DEFAULT_PALETTE, PaletteSnapshot
 
 WIDTH = 32
 HEIGHT = 8
-ASSET_WIDTH = 10
 ASSET_X = 0
 ASSET_Y = 0
 CLOCK_WIDTH = 22
@@ -58,7 +57,7 @@ class AssetAnimation:
 
 
 def blank_asset() -> Image.Image:
-    return Image.new("RGB", (ASSET_WIDTH, HEIGHT), (0, 0, 0))
+    return Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
 
 
 def load_asset(assets_dir: Path, name: str | None) -> AssetAnimation:
@@ -85,10 +84,10 @@ def render_frame(
     palette: PaletteSnapshot = DEFAULT_PALETTE,
 ) -> Image.Image:
     canvas = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    canvas.paste(_normalize_frame(asset), (ASSET_X, ASSET_Y))
     _draw_clock(canvas, now, palette.time_color)
     if weekdays:
         _draw_weekbar(canvas, now, palette)
+    _composite_asset(canvas, asset)
     return canvas
 
 
@@ -115,12 +114,24 @@ def image_to_uint32_bitmap(image: Image.Image) -> list[int]:
     ]
 
 
-def _normalize_frame(frame: Image.Image) -> Image.Image:
-    return frame.convert("RGBA").resize((ASSET_WIDTH, HEIGHT), Image.Resampling.NEAREST).convert("RGB")
+def _prepare_frame(frame: Image.Image) -> Image.Image:
+    return frame.convert("RGBA")
+
+
+def _composite_asset(canvas: Image.Image, asset: Image.Image) -> None:
+    frame = _prepare_frame(asset)
+    visible_width = min(frame.width, WIDTH - ASSET_X)
+    visible_height = min(frame.height, HEIGHT - ASSET_Y)
+    if visible_width <= 0 or visible_height <= 0:
+        return
+    base = canvas.convert("RGBA")
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    overlay.alpha_composite(frame.crop((0, 0, visible_width, visible_height)), (ASSET_X, ASSET_Y))
+    canvas.paste(Image.alpha_composite(base, overlay).convert("RGB"))
 
 
 def _load_animation(image: Image.Image) -> AssetAnimation:
-    frames = tuple(_normalize_frame(frame) for frame in ImageSequence.Iterator(image))
+    frames = tuple(_prepare_frame(frame) for frame in ImageSequence.Iterator(image))
     loop = image.info.get("loop") == 0
     return AssetAnimation(frames or (blank_asset(),), loop=loop)
 

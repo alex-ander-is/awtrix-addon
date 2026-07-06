@@ -10,7 +10,7 @@ from typing import Protocol, Sequence
 
 from PIL import Image
 
-from awtrix_addon.renderer import ASSET_WIDTH, ASSET_X, HEIGHT, WIDTH, build_awtrix_payload, image_to_uint32_bitmap, render_frame
+from awtrix_addon.renderer import ASSET_X, HEIGHT, WIDTH, build_awtrix_payload, image_to_uint32_bitmap, render_frame
 
 
 LIVE_CLOCK_PREFIX = "bedroom-clock"
@@ -20,6 +20,8 @@ LIVE_SWITCH_TOPIC = f"{LIVE_CLOCK_PREFIX}/switch"
 LIVE_SCREEN_URL = "http://bedroom-clock.ander.is/screen"
 FORBIDDEN_TOPIC_PARTS = ("settings", "brightness", "palette", "moodlight")
 COLOR_TOLERANCE = 12
+LIVE_PATTERN_WIDTH = 10
+ASSET_WIDTH = LIVE_PATTERN_WIDTH
 
 RGB = tuple[int, int, int]
 Grid = tuple[tuple[RGB, ...], ...]

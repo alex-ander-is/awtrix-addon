@@ -169,9 +169,9 @@ Put PNG or GIF files in:
 /share/awtrix-addon/assets
 ```
 
-The visible asset area is exactly `10x8` pixels on the left side of the `32x8` AWTRIX canvas. Use `10x8` images when you want pixel-perfect output.
+PNG/GIF files are rendered 1:1 from the top-left origin `(0,0)` on the full `32x8` AWTRIX canvas. Pixels outside the `32x8` canvas are clipped and ignored; x=0..31 and y=0..7 are visible. There is no resize, stretch, padding, or 10x8 normalization.
 
-Larger or smaller PNG/GIF files are accepted, but every frame is resized to `10x8` with nearest-neighbor scaling. The app does not crop, pad, or preserve aspect ratio, so a larger picture may look squeezed or stretched.
+The clock and weekday bar are drawn first, then the asset is composited over them. Transparent pixels preserve the clock pixels underneath, opaque pixels cover them, opaque black hides them, and 50% alpha blends with the clock pixels underneath. RGB assets are treated as fully opaque.
 
 Then pass the file name in `asset`, for example:
 
