@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADDON_DIR="awtrix-addon"
+cd "$ROOT"
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./release [version]
+       ./release -h|--help
+
+Interactively prepare and publish an AWTRIX App release.
+
+Arguments:
+  version
+    Optional. Accepts 0.1.5 or v0.1.5. If omitted, the script asks for it.
+
+Prompts:
+  Version
+    Accepts 0.1.5 or v0.1.5. Press Enter to use the next minor version from
+    the latest vX.Y.Z tag.
+
+  Changelog
+    Multiline text. Enter one or more lines, then a single "." on its own line.
+
+  Commit, tag, and push
+    y commits the staged change set plus release files, creates annotated tag
+    vX.Y.Z, and pushes the current branch and tag to origin.
+    N leaves release files staged and stops before commit.
+
+Files this script edits before the final y/N prompt:
+  awtrix-addon/config.yaml
+  awtrix-addon/pyproject.toml
+  awtrix-addon/CHANGELOG.md
+
+Files this script stages before the final y/N prompt:
+  awtrix-addon/config.yaml
+  awtrix-addon/pyproject.toml
+  awtrix-addon/CHANGELOG.md
+  release
+
+Commit contents after y:
+  Anything already staged, plus the edited release files above and release
+  itself when changed.
+EOF
+}
+
+version_arg=""
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    [[ $# -eq 1 ]] || {
+      usage >&2
+      die "expected at most one version argument"
+    }
+    version_arg="$1"
+    ;;
+esac
+
+latest_tag() {
+  git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+}
+
+normalize_version() {
+  local raw="${1#v}"
+  [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must look like 0.1.5 or v0.1.5"
+  printf '%s\n' "$raw"
+}
+
+next_minor_version() {
+  local tag="${1#v}"
+  local major minor patch
+  IFS=. read -r major minor patch <<<"$tag"
+  printf '%s.%s.0\n' "$major" "$((minor + 1))"
+}
+
+commit_subject() {
+  local body_file="$1"
+  python3 - "$body_file" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    subject = line.strip()
+    if not subject:
+        continue
+    while subject.startswith(("-", "*")):
+        subject = subject[1:].strip()
+    if subject:
+        print(subject[:72])
+        raise SystemExit(0)
+raise SystemExit("changelog entry must contain a non-empty subject line")
+PY
+}
+
+replace_line() {
+  local file="$1"
+  local pattern="$2"
+  local replacement="$3"
+  python3 - "$file" "$pattern" "$replacement" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+pattern = re.compile(sys.argv[2], re.MULTILINE)
+replacement = sys.argv[3]
+text = path.read_text(encoding="utf-8")
+updated, count = pattern.subn(replacement, text, count=1)
+if count != 1:
+    raise SystemExit(f"expected exactly one match in {path}")
+path.write_text(updated, encoding="utf-8")
+PY
+}
+
+update_changelog() {
+  local version="$1"
+  local body_file="$2"
+  python3 - "$version" "$body_file" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+version = sys.argv[1]
+body_path = Path(sys.argv[2])
+path = Path("awtrix-addon/CHANGELOG.md")
+text = path.read_text(encoding="utf-8")
+body = body_path.read_text(encoding="utf-8").strip()
+if not body:
+    raise SystemExit("changelog entry must not be empty")
+heading = f"## {version}"
+if heading in text:
+    raise SystemExit(f"CHANGELOG.md already contains {heading}")
+marker = "\n## "
+index = text.find(marker)
+if index == -1:
+    raise SystemExit("CHANGELOG.md has no version section")
+prefix = text[: index + 1]
+rest = text[index + 1 :]
+entry = f"{heading}\n\n{body}\n\n"
+path.write_text(prefix + entry + rest, encoding="utf-8")
+PY
+}
+
+restore_release_files() {
+  local status=$?
+  [[ "${release_started:-0}" == "1" ]] || return "$status"
+  [[ "${release_finished:-0}" == "1" ]] && return "$status"
+
+  set +e
+  cp "$backup_dir/CHANGELOG.md" "$ADDON_DIR/CHANGELOG.md"
+  cp "$backup_dir/config.yaml" "$ADDON_DIR/config.yaml"
+  cp "$backup_dir/pyproject.toml" "$ADDON_DIR/pyproject.toml"
+  git reset -q -- "$ADDON_DIR/CHANGELOG.md" "$ADDON_DIR/config.yaml" "$ADDON_DIR/pyproject.toml" release
+  if [[ -s "$backup_dir/staged.patch" ]]; then
+    git apply --cached "$backup_dir/staged.patch"
+  fi
+  printf 'Release changes were rolled back because the script did not reach the final y/N prompt.\n' >&2
+  return "$status"
+}
+
+current_branch="$(git branch --show-current)"
+[[ -n "$current_branch" ]] || die "cannot release from detached HEAD"
+
+tag="$(latest_tag)"
+[[ -n "$tag" ]] || die "no vX.Y.Z tag found"
+default_version="$(next_minor_version "$tag")"
+
+if [[ -n "$version_arg" ]]; then
+  version="$(normalize_version "$version_arg")"
+else
+  printf 'Version [%s]: ' "v$default_version"
+  read -r version_input
+  version="$(normalize_version "${version_input:-$default_version}")"
+fi
+tag_name="v$version"
+
+git rev-parse -q --verify "refs/tags/$tag_name" >/dev/null && die "tag $tag_name already exists"
+
+printf '\nEnter changelog lines in English. Finish with a single dot on its own line.\n'
+body_file="$(mktemp)"
+backup_dir="$(mktemp -d)"
+cp "$ADDON_DIR/CHANGELOG.md" "$backup_dir/CHANGELOG.md"
+cp "$ADDON_DIR/config.yaml" "$backup_dir/config.yaml"
+cp "$ADDON_DIR/pyproject.toml" "$backup_dir/pyproject.toml"
+git diff --cached -- "$ADDON_DIR/CHANGELOG.md" "$ADDON_DIR/config.yaml" "$ADDON_DIR/pyproject.toml" release >"$backup_dir/staged.patch"
+release_started=1
+release_finished=0
+trap 'restore_release_files; rm -f "$body_file"; rm -rf "$backup_dir"' EXIT
+while IFS= read -r line; do
+  [[ "$line" == "." ]] && break
+  printf '%s\n' "$line" >>"$body_file"
+done
+
+update_changelog "$version" "$body_file"
+replace_line "$ADDON_DIR/config.yaml" '^version: ".*"$' "version: \"$version\""
+replace_line "$ADDON_DIR/pyproject.toml" '^version = ".*"$' "version = \"$version\""
+subject="$(commit_subject "$body_file")"
+
+git add -- "$ADDON_DIR/CHANGELOG.md" "$ADDON_DIR/config.yaml" "$ADDON_DIR/pyproject.toml" release
+
+printf '\nRelease files staged for %s.\n' "$tag_name"
+git status --short
+release_finished=1
+
+printf '\nCommit, tag, and push %s to origin/%s? [y/N]: ' "$tag_name" "$current_branch"
+read -r confirm
+case "$confirm" in
+  y|Y|yes|YES)
+    ;;
+  *)
+    printf 'Stopped before commit. Staged release files were left in the index.\n'
+    exit 0
+    ;;
+esac
+
+git commit -m "$subject"
+git tag -a "$tag_name" -m "AWTRIX App $version"
+git push origin "$current_branch" "$tag_name"
+
+printf 'Released %s.\n' "$tag_name"

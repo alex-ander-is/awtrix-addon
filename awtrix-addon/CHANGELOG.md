@@ -2,6 +2,10 @@
 
 Released sections are immutable. Put every new change into a new version section.
 
+## 0.1.25
+
+- Added release script
+
 ## 0.1.24
 
 - Add packaged Default PNG/GIF assets for common AWTRIX reminders.

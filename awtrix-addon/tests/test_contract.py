@@ -1961,6 +1961,33 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("ghcr.io/home-assistant/${BUILD_ARCH}-base-python", dockerfile)
         self.assertNotIn("amd64-base", dockerfile)
 
+    def test_release_script_automates_version_changelog_commit_and_tag(self):
+        release = REPO_ROOT.joinpath("release")
+        text = release.read_text(encoding="utf-8")
+        self.assertTrue(os.access(release, os.X_OK))
+        self.assertTrue(text.startswith("#!/usr/bin/env bash\n"))
+        for required in (
+            "awtrix-addon",
+            "Usage: ./release [version]",
+            "Optional. Accepts 0.1.5 or v0.1.5.",
+            "Multiline text",
+            "Files this script edits before the final y/N prompt:",
+            "Files this script stages before the final y/N prompt:",
+            "Anything already staged",
+            "restore_release_files",
+            "Release changes were rolled back",
+            "git reset -q",
+            "release_finished=1",
+            "$ADDON_DIR/config.yaml",
+            "$ADDON_DIR/pyproject.toml",
+            "$ADDON_DIR/CHANGELOG.md",
+            "v$version",
+            'git add -- "$ADDON_DIR/CHANGELOG.md" "$ADDON_DIR/config.yaml" "$ADDON_DIR/pyproject.toml" release',
+            "git tag -a",
+            'git push origin "$current_branch" "$tag_name"',
+        ):
+            self.assertIn(required, text)
+
     def test_artifact_matcher_uses_narrow_basenames(self):
         blocked = [
             ".DS_Store",
